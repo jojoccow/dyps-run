@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>學生環島跑步里程紀錄 (Firebase 版)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+        // Firebase Imports - 這些模組用於連接到雲端資料庫
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, query, onSnapshot, getDocs, doc, setDoc, deleteDoc, where, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // ==== 環境變數 (在 Google 協作平台 iFrame 中會遺失) ====
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // ==== LLM API 配置 (保留 API 呼叫結構) ====
+        const API_KEY = ""; 
+        const API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=" + API_KEY;
+
+        // Constants
+        const LAPS_TO_METERS = 200; 
+        const ISLAND_LAP_DISTANCE_M = 50000; 
+        
+        // Firebase Service Instances
+        let db;
+        let auth;
+        let userId = null;
+        let isAuthReady = false;
+
+        let studentTotalsData = {}; 
+
+        /**
+         * 台灣本島縣市資料 (5x5 矩形環狀跑道)
+         */
+        const CITIES_DATA = [
+            // 右下角 -> 左下角 (Bottom Edge, 5 blocks)
+            { id: 'tainan', name: '台南市', grid: 'col-start-5 row-start-5', color: 'bg-green-600' }, 
+            { id: 'kaohsiung', name: '高雄市', grid: 'col-start-4 row-start-5', color: 'bg-zinc-600' },
+            { id: 'pingtung', name: '屏東縣', grid: 'col-start-3 row-start-5', color: 'bg-teal-600' },
+            { id: 'taitung', name: '台東縣', grid: 'col-start-2 row-start-5', color: 'bg-cyan-600' },
+            { id: 'hualien', name: '花蓮縣', grid: 'col-start-1 row-start-5', color: 'bg-sky-400' }, // Bottom-Left Corner
+            
+            // 左側 (Bottom-Left -> Top-Left, 4 blocks)
+            { id: 'yilan', name: '宜蘭縣', grid: 'col-start-1 row-start-4', color: 'bg-lime-500' },
+            { id: 'keelung', name: '基隆市', grid: 'col-start-1 row-start-3', color: 'bg-emerald-500' },
+            { id: 'newtaipei', name: '新北市', grid: 'col-start-1 row-start-2', color: 'bg-pink-500' },
+            { id: 'taipei', name: '台北市', grid: 'col-start-1 row-start-1', color: 'bg-red-500' }, // Top-Left Corner
+            
+            // 頂部 (Top-Left -> Top-Right, 4 blocks)
+            { id: 'taoyuan', name: '桃園市', grid: 'col-start-2 row-start-1', color: 'bg-yellow-400' },
+            { id: 'hsinchucty', name: '新竹縣', grid: 'col-start-3 row-start-1', color: 'bg-teal-500' },
+            { id: 'miaoli', name: '苗栗縣', grid: 'col-start-4 row-start-1', color: 'bg-purple-500' },
+            { id: 'taichung', name: '台中市', grid: 'col-start-5 row-start-1', color: 'bg-orange-500' }, // Top-Right Corner
+
+            // 右側 (Top-Right -> Bottom-Right, 3 blocks)
+            { id: 'changhua', name: '彰化縣', grid: 'col-start-5 row-start-2', color: 'bg-rose-500' },
+            { id: 'yunlin', name: '雲林縣', grid: 'col-start-5 row-start-3', color: 'bg-fuchsia-600' }, 
+            { id: 'chiayicty', name: '嘉義縣', grid: 'col-start-5 row-start-4', color: 'bg-pink-400' }, 
+        ];
+        
+        // 16 個縣市的環島順序定義
+        const TAIWAN_PATH_POINTS = [
+            { id: 'tainan', name: '台南市', progress: 0.0000 },
+            { id: 'kaohsiung', name: '高雄市', progress: 0.0625 },
+            { id: 'pingtung', name: '屏東縣', progress: 0.1250 },
+            { id: 'taitung', name: '台東縣', progress: 0.1875 },
+            { id: 'hualien', name: '花蓮縣', progress: 0.2500 },
+            { id: 'yilan', name: '宜蘭縣', progress: 0.3125 },
+            { id: 'keelung', name: '基隆市', progress: 0.3750 },
+            { id: 'newtaipei', name: '新北市', progress: 0.4375 },
+            { id: 'taipei', name: '台北市', progress: 0.5000 },
+            { id: 'taoyuan', name: '桃園市', progress: 0.5625 },
+            { id: 'hsinchucty', name: '新竹縣', progress: 0.6250 },
+            { id: 'miaoli', name: '苗栗縣', progress: 0.6875 },
+            { id: 'taichung', name: '台中市', progress: 0.7500 },
+            { id: 'changhua', name: '彰化縣', progress: 0.8125 },
+            { id: 'yunlin', name: '雲林縣', progress: 0.8750 },
+            { id: 'chiayicty', name: '嘉義縣', progress: 0.9375 },
+            { id: 'tainan_end', name: '回到台南', progress: 1.0000 }, 
+        ];
+
+
+        // ==== Firebase Functions ====
+        
+        /**
+         * 初始化 Firebase 應用程式和身份驗證
+         */
+        async function initFirebase() {
+            if (!firebaseConfig) {
+                console.error("Firebase config is missing. Cannot initialize Firebase. This app will not function outside of the Canvas environment.");
+                updateAuthStatusUI("🔴 Firebase 配置遺失 (無法連接資料庫)");
+                return;
+            }
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                // 設置身份驗證狀態監聽
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        isAuthReady = true;
+                        updateAuthStatusUI(`✅ 已連接 (用戶 ID: ${userId})`);
+                        setupRealtimeListener(); 
+                    } else {
+                        // 使用自訂令牌或匿名登入
+                        try {
+                            if (initialAuthToken) {
+                                await signInWithCustomToken(auth, initialAuthToken);
+                            } else {
+                                await signInAnonymously(auth);
+                            }
+                        } catch (e) {
+                            console.error("Authentication failed:", e);
+                            isAuthReady = true; 
+                            userId = crypto.randomUUID(); // Fallback to a random ID for local use
+                            updateAuthStatusUI(`⚠️ 驗證失敗 (使用本地 ID: ${userId})`, 'error');
+                            setupRealtimeListener(); 
+                        }
+                    }
+                });
+            } catch (e) {
+                console.error("Firebase initialization failed:", e);
+                updateAuthStatusUI("❌ Firebase 初始化失敗");
+            }
+        }
+
+        /**
+         * 設置 Firestore 實時監聽
+         */
+        function setupRealtimeListener() {
+            if (!db || !isAuthReady) return;
+
+            const recordsColRef = collection(db, 'artifacts', appId, 'public', 'data', 'running_records');
+            const q = query(recordsColRef); 
+            
+            onSnapshot(q, (snapshot) => {
+                const records = [];
+                snapshot.forEach(doc => {
+                    const data = doc.data();
+                    records.push({ id: doc.id, ...data });
+                });
+                
+                // 按時間戳記排序
+                records.sort((a, b) => b.timestamp - a.timestamp);
+                processRecords(records);
+            }, (error) => {
+                console.error("Firestore onSnapshot error:", error);
+                updateAuthStatusUI(`⚠️ 數據監聽失敗: ${error.message}`, 'error');
+            });
+        }
+
+
+        // ==== DOMContentLoaded / Init ====
+        document.addEventListener('DOMContentLoaded', () => {
+            const form = document.getElementById('recordForm');
+            const dateInput = document.getElementById('date');
+            const today = new Date().toISOString().split('T')[0];
+            dateInput.value = today;
+            form.addEventListener('submit', handleFormSubmit);
+            
+            const generateButton = document.getElementById('generateReflectionButton');
+            generateButton.addEventListener('click', (e) => {
+                e.preventDefault();
+                const name = document.getElementById('name').value.trim();
+                const studentId = document.getElementById('studentId').value.trim();
+                
+                if (!name || !studentId) {
+                    showMessageBox("請先輸入姓名和座號，才能取得個人化 AI 心得。", "info");
+                    return;
+                }
+                
+                generateReflection(name, studentId);
+            });
+
+            // 動態生成縣市色塊地圖
+            buildBlockMap();
+
+            // 初始化 Firebase 和數據監聽
+            initFirebase(); 
+            updateAuthStatusUI("⏳ 正在連線到 Firebase...");
+        });
+
+        /**
+         * 更新 Firebase 連線狀態 UI
+         */
+        function updateAuthStatusUI(message, type = 'info') {
+            const statusElement = document.getElementById('authStatus');
+            const classMap = {
+                info: 'text-sm font-semibold text-blue-700 p-2 rounded-lg bg-blue-100 mb-4',
+                error: 'text-sm font-semibold text-red-700 p-2 rounded-lg bg-red-100 mb-4',
+                success: 'text-sm font-semibold text-green-700 p-2 rounded-lg bg-green-100 mb-4'
+            };
+            
+            statusElement.textContent = message;
+            statusElement.className = classMap[type] || classMap.info;
+        }
+
+
+        /**
+         * 動態生成縣市色塊地圖
+         */
+        function buildBlockMap() {
+            const mapGrid = document.getElementById('taiwan-map-grid');
+            mapGrid.innerHTML = `
+                <!-- 中央競賽主題插圖 (3x3 區塊) -->
+                <div id="central-illustration" class="grid-center-area flex flex-col items-center justify-center p-4">
+                    <!-- Trophy SVG (代表競賽與目標) -->
+                    <svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-yellow-500 fill-yellow-200">
+                        <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"></path>
+                        <path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"></path>
+                        <path d="M4 22h16"></path>
+                        <path d="M10 14h4"></path>
+                        <path d="M12 17v5"></path>
+                        <path d="M12 12A6 6 0 0 0 5 8c0-1.5 1-4 2-5h10c1 1 2 3.5 2 5a6 6 0 0 0-7 4"></path>
+                    </svg>
+                    <p class="text-2xl font-black text-indigo-700 mt-2 text-center leading-tight">環島挑戰賽<br/>GO GO GO!</p>
+                </div>
+            `; 
+            
+            CITIES_DATA.forEach(region => {
+                const block = document.createElement('div');
+                block.id = `block-${region.id}`;
+                block.className = `city-block ${region.grid} ${region.color} relative`;
+                
+                const nameSpan = document.createElement('span');
+                nameSpan.textContent = region.name;
+                nameSpan.className = 'text-center z-10';
+
+                const markerContainer = document.createElement('div');
+                markerContainer.id = `marker-container-${region.id}`;
+                markerContainer.className = 'absolute inset-0 pointer-events-none z-20';
+
+                block.appendChild(nameSpan);
+                block.appendChild(markerContainer);
+                mapGrid.appendChild(block);
+            });
+        }
+
+
+        /**
+         * 處理表單提交 (Firestore 版本)
+         */
+        async function handleFormSubmit(e) {
+            e.preventDefault();
+            
+            if (!db || !userId) {
+                showMessageBox("資料庫尚未連線或用戶未驗證。請檢查連線狀態。", "error");
+                return;
+            }
+
+            const name = document.getElementById('name').value.trim();
+            const studentId = document.getElementById('studentId').value.trim();
+            const date = document.getElementById('date').value;
+            const laps = parseInt(document.getElementById('laps').value, 10);
+
+            if (!name || !studentId || !date || isNaN(laps) || laps <= 0) {
+                showMessageBox("請確保所有欄位都已正確填寫，且圈數大於 0。", "error");
+                return;
+            }
+            
+            const distanceMeters = laps * LAPS_TO_METERS;
+
+            const record = {
+                name: name,
+                studentId: studentId,
+                date: date,
+                laps: laps,
+                distanceMeters: distanceMeters,
+                submittedBy: userId, 
+                timestamp: new Date().getTime()
+            };
+
+            const submitButton = document.getElementById('submitButton');
+            submitButton.disabled = true;
+            submitButton.textContent = '儲存中...';
+
+            try {
+                const recordsColRef = collection(db, 'artifacts', appId, 'public', 'data', 'running_records');
+                await addDoc(recordsColRef, record);
+                
+                showMessageBox("跑步紀錄已成功儲存到雲端！", "success");
+                document.getElementById('laps').value = '';
+                
+            } catch (error) {
+                console.error("Error saving document: ", error);
+                showMessageBox(`儲存紀錄失敗 (錯誤: ${error.message})`, "error");
+            } finally {
+                submitButton.disabled = false;
+                submitButton.textContent = '提交紀錄';
+            }
+        }
+        
+        /**
+         * 根據進度找到當前所在的縣市 ID、名稱和縣市內進度
+         */
+        function getCityInfoByProgress(progress) {
+            const currentProgress = progress % 1.0; 
+            
+            for (let i = 0; i < TAIWAN_PATH_POINTS.length - 1; i++) {
+                const p1 = TAIWAN_PATH_POINTS[i];
+                const p2 = TAIWAN_PATH_POINTS[i + 1];
+
+                if (currentProgress >= p1.progress && currentProgress < p2.progress) {
+                    const segmentLength = p2.progress - p1.progress;
+                    const progressInCity = (currentProgress - p1.progress) / segmentLength; 
+                    
+                    return {
+                        cityId: p1.id,
+                        cityName: p1.name.replace(/\/.*/, '').replace('回到', ''),
+                        progressInCity: progressInCity
+                    };
+                }
+            }
+            
+            if (currentProgress === 0.0 && progress > 0) {
+                 const startCity = TAIWAN_PATH_POINTS[0];
+                 return {
+                    cityId: startCity.id,
+                    cityName: startCity.name.replace(/\/.*/, '').replace('回到', ''),
+                    progressInCity: 1.0 
+                };
+            }
+            
+            const startCity = TAIWAN_PATH_POINTS[0];
+            return {
+                cityId: startCity.id,
+                cityName: startCity.name.replace(/\/.*/, '').replace('回到', ''),
+                progressInCity: 0.0
+            };
+        }
+
+        /**
+         * 產生 AI 心得
+         */
+        async function generateReflection(studentName, studentId) {
+            const reflectionBox = document.getElementById('aiReflectionContent');
+            const generateButton = document.getElementById('generateReflectionButton');
+
+            const student = studentTotalsData[studentId];
+            if (!student) {
+                reflectionBox.innerHTML = '<p class="text-red-500">❌ 找不到該座號的跑步紀錄。請先提交至少一次紀錄。</p>';
+                return;
+            }
+
+            generateButton.disabled = true;
+            generateButton.innerHTML = '✨ 正在產生心得...';
+            reflectionBox.innerHTML = '<p class="text-gray-500 animate-pulse">正在與 AI 教練連線，請稍候... (外部請求可能會被 iFrame 阻擋)</p>';
+            
+            const totalDistance = student.totalDistanceM;
+            const totalKm = (totalDistance / 1000).toFixed(2);
+            const fullLaps = Math.floor(totalDistance / ISLAND_LAP_DISTANCE_M);
+            const currentLapProgress = (totalDistance % ISLAND_LAP_DISTANCE_M) / ISLAND_LAP_DISTANCE_M;
+            
+            const cityInfo = getCityInfoByProgress(currentLapProgress);
+            const location = cityInfo.cityName;
+            const progressInCityPercent = (cityInfo.progressInCity * 100).toFixed(0);
+
+            const nextLapKm = ((fullLaps + 1) * ISLAND_LAP_DISTANCE_M / 1000).toFixed(2);
+
+            const systemPrompt = "你是一位充滿活力且富有洞察力的學生體育教練。根據學生在虛擬環島跑道上的總里程和進度，以繁體中文撰寫一份簡短、具激勵性且個性化的跑步分析或心得。重點鼓勵他們的努力並提及他們所在的大概地理位置。限制在三到四句話內。";
+
+            const userQuery = `請為學生 ${studentName} (座號 ${studentId}) 撰寫心得。他們目前總里程為 ${totalKm} 公里。已完成 ${fullLaps} 次環島。在當前環島進度中，他們正位於 ${location}，進度約 ${progressInCityPercent}%。下一個完整環島里程碑是 ${nextLapKm} 公里。請專注於鼓勵和分析。`;
+
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                systemInstruction: {
+                    parts: [{ text: systemPrompt }]
+                },
+            };
+
+            const maxRetries = 3;
+            let resultText = '';
+
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    const response = await fetch(API_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+
+                    const result = await response.json();
+                    resultText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+                    
+                    if (resultText) {
+                        break; 
+                    }
+
+                } catch (error) {
+                    console.error(`Attempt ${i + 1} failed:`, error);
+                    if (i < maxRetries - 1) {
+                        await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000));
+                    } else {
+                        resultText = `很抱歉，AI 教練連線失敗，請稍後再試。 (${error.message})。可能的原因是 iFrame 阻擋了外部網路連線。`;
+                    }
+                }
+            }
+
+            if (resultText) {
+                 reflectionBox.innerHTML = `<p class="text-gray-700 leading-relaxed italic border-l-4 border-purple-400 pl-4">${resultText}</p>`;
+            } else {
+                 reflectionBox.innerHTML = '<p class="text-red-500">AI 教練未能產生心得。請檢查網路連線或稍後再試。</p>';
+            }
+
+            generateButton.disabled = false;
+            generateButton.innerHTML = '✨ 取得 AI 跑步心得';
+        }
+        
+        /**
+         * 處理紀錄並更新 UI (排行榜和地圖)
+         */
+        function processRecords(records) {
+            const studentTotals = {};
+            const leaderboard = document.getElementById('leaderboard');
+            
+            leaderboard.innerHTML = ''; 
+            
+            records.forEach(record => {
+                const key = record.studentId;
+                if (!studentTotals[key]) {
+                    studentTotals[key] = {
+                        name: record.name,
+                        studentId: key,
+                        totalDistanceM: 0,
+                        laps: 0
+                    };
+                }
+                const distance = typeof record.distanceMeters === 'number' ? record.distanceMeters : 0;
+                studentTotals[key].totalDistanceM += distance;
+            });
+            
+            studentTotalsData = studentTotals;
+            
+            let students = Object.values(studentTotals);
+            students.sort((a, b) => b.totalDistanceM - a.totalDistanceM);
+
+            students.forEach((student, index) => {
+                const totalKm = (student.totalDistanceM / 1000).toFixed(2);
+                const li = document.createElement('li');
+                li.className = 'p-3 bg-white/70 backdrop-blur-sm rounded-xl flex justify-between items-center shadow-md mb-2 transition-all duration-300 hover:shadow-lg';
+                li.innerHTML = `
+                    <div class="flex items-center space-x-3">
+                        <span class="font-bold text-lg w-6 text-center text-indigo-600">${index + 1}</span>
+                        <span class="text-gray-800 font-medium truncate">${student.name} (${student.studentId})</span>
+                    </div>
+                    <span class="font-mono text-xl text-green-700">${totalKm} KM</span>
+                `;
+                leaderboard.appendChild(li);
+            });
+            
+            updateMap(students);
+        }
+
+        /**
+         * 更新地圖上的標記位置和進度條
+         */
+        function updateMap(students) {
+            CITIES_DATA.forEach(city => {
+                const container = document.getElementById(`marker-container-${city.id}`);
+                if (container) {
+                    container.innerHTML = '';
+                }
+            });
+
+            students.forEach(student => {
+                const totalDistance = student.totalDistanceM;
+                const fullLaps = Math.floor(totalDistance / ISLAND_LAP_DISTANCE_M);
+                const currentLapProgress = (totalDistance % ISLAND_LAP_DISTANCE_M) / ISLAND_LAP_DISTANCE_M;
+                
+                const { cityId, progressInCity } = getCityInfoByProgress(currentLapProgress);
+
+                const cityBlock = document.getElementById(`block-${cityId}`);
+                const container = document.getElementById(`marker-container-${cityId}`);
+                
+                if (!cityBlock || !container) return; 
+
+                // 1. 縣市內的進度條 (位於方塊底部)
+                let progressBar = document.getElementById(`progress-bar-${student.studentId}`);
+                if (progressBar && progressBar.parentElement !== cityBlock) {
+                    progressBar.parentElement.removeChild(progressBar);
+                    progressBar = null; 
+                }
+                
+                if (!progressBar) {
+                    progressBar = document.createElement('div');
+                    progressBar.id = `progress-bar-${student.studentId}`;
+                    progressBar.className = 'absolute bottom-0 left-0 h-1 transition-all duration-1000 ease-out z-0 opacity-80';
+                    cityBlock.appendChild(progressBar);
+                }
+                
+                progressBar.style.width = `${progressInCity * 100}%`;
+                progressBar.style.backgroundColor = getColorHash(student.studentId);
+                
+                // 2. 標記 (Marker) (位於進度條末端)
+                const markerX = `calc(${progressInCity * 100}% - 12px)`; 
+                
+                let marker = document.getElementById(`marker-${student.studentId}`);
+                if (!marker) {
+                    marker = document.createElement('div');
+                    marker.id = `marker-${student.studentId}`;
+                    marker.className = `student-marker absolute w-6 h-6 rounded-full shadow-lg border-2 border-white flex items-center justify-center font-bold text-xs transform transition-all duration-1000 ease-out z-30`;
+                    container.appendChild(marker); 
+                }
+                
+                const color = getColorHash(student.studentId);
+                marker.style.backgroundColor = color;
+                marker.style.color = getTextColor(color);
+                marker.title = `${student.name} (${student.studentId})：總里程 ${(totalDistance / 1000).toFixed(2)} KM (已完成 ${fullLaps} 次環島)`;
+                
+                marker.textContent = student.studentId; 
+                
+                marker.style.left = markerX;
+                marker.style.bottom = `-2px`; 
+                
+                if (marker.parentElement !== container) {
+                    container.appendChild(marker);
+                }
+            });
+        }
+        
+        /**
+         * 簡單的文字轉顏色 Hash 函數
+         */
+        function getColorHash(str) {
+            let hash = 0;
+            for (let i = 0; i < str.length; i++) {
+                hash = str.charCodeAt(i) + ((hash << 5) - hash);
+            }
+            let color = '#';
+            for (let i = 0; i < 3; i++) {
+                const value = (hash >> (i * 8)) & 0xFF;
+                color += ('00' + value.toString(16)).substr(-2);
+            }
+            return color;
+        }
+
+        /**
+         * 根據背景色選擇合適的文字顏色 (黑或白)
+         */
+        function getTextColor(hexcolor) {
+            const r = parseInt(hexcolor.substring(1, 3), 16);
+            const g = parseInt(hexcolor.substring(3, 5), 16);
+            const b = parseInt(hexcolor.substring(5, 7), 16);
+            const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+            return (brightness > 150) ? 'black' : 'white';
+        }
+
+        /**
+         * 顯示自訂訊息框 (取代 alert/confirm)
+         */
+        function showMessageBox(message, type = 'info') {
+            const box = document.getElementById('messageBox');
+            const content = document.getElementById('messageContent');
+            const icon = document.getElementById('messageIcon');
+            const boxClasses = {
+                success: 'bg-green-100 border-green-400 text-green-700',
+                error: 'bg-red-100 border-red-400 text-red-700',
+                info: 'bg-blue-100 border-blue-400 text-blue-700'
+            };
+            const iconContent = {
+                success: '✅',
+                error: '❌',
+                info: 'ℹ️'
+            };
+
+            box.className = `fixed bottom-5 right-5 p-4 border rounded-lg shadow-xl z-50 transition-transform duration-300 transform translate-x-0 ${boxClasses[type]}`;
+            icon.textContent = iconContent[type];
+            content.textContent = message;
+
+            setTimeout(() => {
+                box.classList.add('translate-x-full');
+            }, 5000);
+            
+            box.classList.remove('translate-x-full');
+        }
+        
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&family=Noto+Sans+TC:wght@100..900&display=swap');
+        
+        body {
+            font-family: 'Noto Sans TC', 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+
+        /* 色塊地圖網格容器 */
+        #taiwan-map-grid {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr)); 
+            grid-template-rows: repeat(5, minmax(80px, 1fr)); 
+            gap: 4px; 
+            background-color: #ecf0f1; 
+            border-radius: 1rem;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            width: 100%;
+            height: auto;
+            overflow: hidden; 
+        }
+        
+        /* 定義每個縣市方塊的共同樣式 */
+        .city-block {
+            @apply p-2 text-white font-bold text-base flex items-center justify-center shadow-inner transition-all duration-300 ease-in-out cursor-default;
+            border: 2px solid rgba(255, 255, 255, 0.6); 
+            min-height: 80px; 
+            overflow: hidden; 
+        }
+
+        .city-block > span {
+            text-shadow: 0 0 4px rgba(0, 0, 0, 0.4);
+        }
+
+        .student-marker {
+            width: 24px;
+            height: 24px;
+            transform: translateX(-50%);
+            border: 3px solid white; 
+        }
+        
+        /* 中央競賽主題區塊 CSS */
+        .grid-center-area {
+            grid-column: 2 / 5; 
+            grid-row: 2 / 5;    
+            background-color: #ffffff; 
+            border: 4px dashed #6366f1; 
+            border-radius: 1rem;
+            box-shadow: 0 0 20px rgba(99, 102, 241, 0.3);
+            z-index: 5; 
+            animation: pulse-border 3s infinite;
+        }
+        
+        @keyframes pulse-border {
+            0% { border-color: #6366f1; box-shadow: 0 0 10px rgba(99, 102, 241, 0.3); }
+            50% { border-color: #3b82f6; box-shadow: 0 0 25px rgba(59, 130, 246, 0.6); }
+            100% { border-color: #6366f1; box-shadow: 0 0 10px rgba(99, 102, 241, 0.3); }
+        }
+    </style>
+</head>
+<body class="min-h-screen">
+
+    <div class="container mx-auto p-4 lg:p-8">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-extrabold text-indigo-700 mb-2">🏃‍♂️ 學生環島跑步里程儀 (Firebase 版) 🇹🇼</h1>
+            <p class="text-xl text-gray-600">跑步進度視覺化：沿著矩形環狀跑道順時針繞行！</p>
+            <p class="text-sm text-gray-500 mt-1">虛擬環島跑道一圈為 <span class="font-bold text-red-500">50,000 公尺 (50 公里)</span>。</p>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            
+            <!-- 1. 資料輸入區 -->
+            <div class="lg:col-span-1 bg-white p-6 rounded-2xl shadow-xl h-fit sticky top-8">
+                <h2 class="text-2xl font-bold text-indigo-600 mb-4 border-b pb-2">輸入今日跑步紀錄</h2>
+                
+                <div id="authStatus" class="text-sm font-semibold text-blue-700 p-2 rounded-lg bg-blue-100 mb-4">
+                    ⏳ 正在連線到 Firebase...
+                </div>
+                
+                <form id="recordForm" class="space-y-4">
+                    
+                    <div>
+                        <label for="name" class="block text-sm font-medium text-gray-700">姓名</label>
+                        <input type="text" id="name" required class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="請輸入姓名">
+                    </div>
+                    
+                    <div>
+                        <label for="studentId" class="block text-sm font-medium text-gray-700">座號 / 編號</label>
+                        <input type="text" id="studentId" required class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="例如：01 / A01">
+                    </div>
+
+                    <div>
+                        <label for="date" class="block text-sm font-medium text-gray-700">日期</label>
+                        <input type="date" id="date" required class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-3 focus:border-indigo-500 focus:ring-indigo-500">
+                    </div>
+
+                    <div>
+                        <label for="laps" class="block text-sm font-medium text-gray-700">跑步圈數 (200 公尺/圈)</label>
+                        <input type="number" id="laps" required min="1" class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="請輸入完成圈數">
+                    </div>
+
+                    <button type="submit" id="submitButton" class="w-full py-3 px-4 border border-transparent rounded-lg shadow-md text-base font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-colors duration-200">
+                        提交紀錄
+                    </button>
+                    <p class="text-xs text-gray-500 text-center mt-2">資料將儲存於雲端資料庫。</p>
+                </form>
+                
+                <!-- AI 教練分析區 -->
+                <div class="mt-6 border-t pt-6">
+                    <h2 class="text-xl font-bold text-purple-600 mb-3 flex items-center">
+                        <span class="mr-2">🤖</span> AI 教練心得分析
+                    </h2>
+                    <p class="text-sm text-gray-600 mb-4">根據您輸入的座號，AI 教練將分析您的累積里程並提供激勵性回饋！</p>
+                    
+                    <button type="button" id="generateReflectionButton" class="w-full py-3 px-4 border border-transparent rounded-lg shadow-md text-base font-medium text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 transition-colors duration-200">
+                        ✨ 取得 AI 跑步心得
+                    </button>
+
+                    <div id="aiReflectionContent" class="mt-4 p-4 bg-purple-50 rounded-lg min-h-[50px] flex items-center justify-center">
+                        <p class="text-gray-500 text-sm">點擊上方按鈕開始分析...</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 2. 視覺化地圖區 (色塊地圖) -->
+            <div class="lg:col-span-2 bg-white p-6 rounded-2xl shadow-xl">
+                <h2 class="text-2xl font-bold text-indigo-600 mb-4 border-b pb-2">環島進度視覺化 (矩形跑道)</h2>
+                
+                <div class="flex flex-col gap-6 justify-center items-center">
+                    
+                    <!-- 台灣本島色塊地圖網格 -->
+                    <div id="taiwan-map-grid" class="w-full max-w-2xl aspect-[5/5]">
+                        <!-- 中央競賽主題插圖 (3x3 區塊) -->
+                        <div id="central-illustration" class="grid-center-area flex flex-col items-center justify-center p-4">
+                            <!-- Trophy SVG (代表競賽與目標) -->
+                            <svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-yellow-500 fill-yellow-200">
+                                <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"></path>
+                                <path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"></path>
+                                <path d="M4 22h16"></path>
+                                <path d="M10 14h4"></path>
+                                <path d="M12 17v5"></path>
+                                <path d="M12 12A6 6 0 0 0 5 8c0-1.5 1-4 2-5h10c1 1 2 3.5 2 5a6 6 0 0 0-7 4"></path>
+                            </svg>
+                            <p class="text-2xl font-black text-indigo-700 mt-2 text-center leading-tight">環島挑戰賽<br/>GO GO GO!</p>
+                        </div>
+                        <!-- 縣市方塊將由 JavaScript 注入此處 -->
+                    </div>
+
+                    <!-- 排行榜/總覽 -->
+                    <div class="w-full p-4 bg-gray-50 rounded-xl shadow-md flex flex-col justify-start">
+                        <h3 class="text-xl font-semibold text-gray-700 mb-3 border-b pb-1">總里程排行榜</h3>
+                        <ul id="leaderboard" class="space-y-2">
+                            <li class="p-3 text-gray-500 text-center">正在載入數據...</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            
+        </div>
+        
+    </div>
+
+    <!-- 自訂訊息框 (取代 alert) -->
+    <div id="messageBox" class="fixed bottom-5 right-5 p-4 border rounded-lg shadow-xl z-50 transition-transform duration-300 transform translate-x-full" role="alert">
+        <div class="flex items-center">
+            <span id="messageIcon" class="text-xl mr-2"></span>
+            <span id="messageContent" class="font-medium"></span>
+            <button onclick="document.getElementById('messageBox').classList.add('translate-x-full')" class="ml-4 text-gray-500 hover:text-gray-700">&times;</button>
+        </div>
+    </div>
+</body>
+</html>
