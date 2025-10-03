@@ -3,157 +3,261 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>學生環島跑步里程紀錄 (Firebase 版)</title>
+    <title>學生環島跑步紀錄視覺化:index.html</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
-        // Firebase Imports - 這些模組用於連接到雲端資料庫
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, query, onSnapshot, getDocs, doc, setDoc, deleteDoc, where, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        // 導入 getDocs 和 deleteDoc 以用於數據刪除
+        import { getFirestore, collection, addDoc, query, onSnapshot, orderBy, serverTimestamp, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
-        // ==== 環境變數 (在 Google 協作平台 iFrame 中會遺失) ====
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        // 設置 Firebase/Firestore 的日誌級別，方便調試
+        setLogLevel('debug');
 
-        // ==== LLM API 配置 (保留 API 呼叫結構) ====
+        // ==== LLM API 配置 (保持不變) ====
         const API_KEY = ""; 
         const API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=" + API_KEY;
-
-        // Constants
-        const LAPS_TO_METERS = 200; 
-        const ISLAND_LAP_DISTANCE_M = 50000; 
         
-        // Firebase Service Instances
-        let db;
-        let auth;
-        let userId = null;
-        let isAuthReady = false;
+        // **** ⚠️ 管理者密碼設置 (請自行修改此密碼) ⚠️ ****
+        // ❌ 嚴重警告：由於這是純前端應用程式，此密碼是可透過網頁原始碼查看的！
+        // 此機制僅用於防止「非惡意」誤刪。若需真正安全，請務必在 Firebase Console 調整「Security Rules」。
+        const ADMIN_PIN = "123456"; 
+        // **********************************************
 
+        // ==== IMPORTANT: START Firebase Config (FOR GH Pages / Static Hosting) ====
+        // **** 這是 Beta 4 的核心變更 ****
+        // **** 如果您在 GitHub Pages 上發佈，請務必將以下配置替換為您自己的 Firebase 專案配置 ****
+        const GH_PAGES_FIREBASE_CONFIG = {
+            apiKey: "YOUR_API_KEY", // <--- 替換成您的 Web API Key
+            authDomain: "YOUR_PROJECT_ID.firebaseapp.com", // <--- 替換成您的 Auth Domain
+            projectId: "YOUR_PROJECT_ID", // <--- 替換成您的 Project ID
+            storageBucket: "YOUR_PROJECT_ID.appspot.com", // 替換成您的 Storage Bucket
+            messagingSenderId: "YOUR_MESSAGING_SENDER_ID", // 替換成您的 Sender ID
+            appId: "YOUR_APP_ID" // 替換成您的 Web App ID
+        };
+        // ==== IMPORTANT: END Firebase Config ====
+
+        // ==== Global Variables (Adaptation for Static Hosting / Canvas) ====
+        // 判斷是否在 Canvas 環境中 (__firebase_config 是由 Canvas 注入的全域變數)
+        const isCanvasEnvironment = typeof __firebase_config !== 'undefined' && __firebase_config !== '{}';
+
+        // 優先使用 Canvas 配置，否則使用 GH_PAGES_FIREBASE_CONFIG
+        const firebaseConfig = isCanvasEnvironment 
+            ? JSON.parse(__firebase_config) 
+            : GH_PAGES_FIREBASE_CONFIG;
+            
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        
+        // App ID：在靜態頁面上，我們使用一個固定的 App ID 來隔離 Beta 4 的資料
+        const appId = isCanvasEnvironment 
+            ? (typeof __app_id !== 'undefined' ? __app_id : 'default-running-app') 
+            : 'beta4-gh-pages-running-app'; 
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+
+        // Constants (保持不變)
+        const LAPS_TO_METERS = 200; // 1 圈 = 200 公尺
+        const ISLAND_LAP_DISTANCE_M = 50000; 
+        const AUTH_TIMEOUT_MS = 5000; 
+
+        let currentUserId = null;
+        let authReady = false;
         let studentTotalsData = {}; 
+        let listenerActive = false; 
 
-        /**
-         * 台灣本島縣市資料 (5x5 矩形環狀跑道)
-         */
+        // 台灣本島縣市資料
         const CITIES_DATA = [
-            // 右下角 -> 左下角 (Bottom Edge, 5 blocks)
-            { id: 'tainan', name: '台南市', grid: 'col-start-5 row-start-5', color: 'bg-green-600' }, 
-            { id: 'kaohsiung', name: '高雄市', grid: 'col-start-4 row-start-5', color: 'bg-zinc-600' },
-            { id: 'pingtung', name: '屏東縣', grid: 'col-start-3 row-start-5', color: 'bg-teal-600' },
-            { id: 'taitung', name: '台東縣', grid: 'col-start-2 row-start-5', color: 'bg-cyan-600' },
-            { id: 'hualien', name: '花蓮縣', grid: 'col-start-1 row-start-5', color: 'bg-sky-400' }, // Bottom-Left Corner
-            
-            // 左側 (Bottom-Left -> Top-Left, 4 blocks)
-            { id: 'yilan', name: '宜蘭縣', grid: 'col-start-1 row-start-4', color: 'bg-lime-500' },
-            { id: 'keelung', name: '基隆市', grid: 'col-start-1 row-start-3', color: 'bg-emerald-500' },
-            { id: 'newtaipei', name: '新北市', grid: 'col-start-1 row-start-2', color: 'bg-pink-500' },
-            { id: 'taipei', name: '台北市', grid: 'col-start-1 row-start-1', color: 'bg-red-500' }, // Top-Left Corner
-            
-            // 頂部 (Top-Left -> Top-Right, 4 blocks)
-            { id: 'taoyuan', name: '桃園市', grid: 'col-start-2 row-start-1', color: 'bg-yellow-400' },
-            { id: 'hsinchucty', name: '新竹縣', grid: 'col-start-3 row-start-1', color: 'bg-teal-500' },
-            { id: 'miaoli', name: '苗栗縣', grid: 'col-start-4 row-start-1', color: 'bg-purple-500' },
-            { id: 'taichung', name: '台中市', grid: 'col-start-5 row-start-1', color: 'bg-orange-500' }, // Top-Right Corner
+            // 第一段：南邊海岸線 (右至左/東至西) - 視覺上應往左移動
+            { id: 'tainan', name: '台南市', grid: 'col-start-5 row-start-5', color: 'bg-green-600', direction: 'left' }, 
+            { id: 'kaohsiung', name: '高雄市', grid: 'col-start-4 row-start-5', color: 'bg-zinc-600', direction: 'left' },
+            { id: 'pingtung', name: '屏東縣', grid: 'col-start-3 row-start-5', color: 'bg-teal-600', direction: 'left' },
+            { id: 'taitung', name: '台東縣', grid: 'col-start-2 row-start-5', color: 'bg-cyan-600', direction: 'left' },
+            { id: 'hualien', name: '花蓮縣', grid: 'col-start-1 row-start-5', color: 'bg-sky-400', direction: 'up' }, // 轉角
 
-            // 右側 (Top-Right -> Bottom-Right, 3 blocks)
-            { id: 'changhua', name: '彰化縣', grid: 'col-start-5 row-start-2', color: 'bg-rose-500' },
-            { id: 'yunlin', name: '雲林縣', grid: 'col-start-5 row-start-3', color: 'bg-fuchsia-600' }, 
-            { id: 'chiayicty', name: '嘉義縣', grid: 'col-start-5 row-start-4', color: 'bg-pink-400' }, 
+            // 第二段：東邊海岸線 (底至上/南至北) - 視覺上應往上移動
+            { id: 'yilan', name: '宜蘭縣', grid: 'col-start-1 row-start-4', color: 'bg-lime-500', direction: 'up' },
+            { id: 'keelung', name: '基隆市', grid: 'col-start-1 row-start-3', color: 'bg-emerald-500', direction: 'up' },
+            { id: 'newtaipei', name: '新北市', grid: 'col-start-1 row-start-2', color: 'bg-pink-500', direction: 'up' },
+            { id: 'taipei', name: '台北市', grid: 'col-start-1 row-start-1', color: 'bg-red-500', direction: 'right' }, // 轉角
+
+            // 第三段：北邊海岸線 (左至右/西至東) - 視覺上應往右移動
+            { id: 'taoyuan', name: '桃園市', grid: 'col-start-2 row-start-1', color: 'bg-yellow-400', direction: 'right' },
+            { id: 'hsinchucty', name: '新竹縣', grid: 'col-start-3 row-start-1', color: 'bg-teal-500', direction: 'right' },
+            { id: 'miaoli', name: '苗栗縣', grid: 'col-start-4 row-start-1', color: 'bg-purple-500', direction: 'right' },
+            { id: 'taichung', name: '台中市', grid: 'col-start-5 row-start-1', color: 'bg-orange-500', direction: 'down' }, // 轉角
+
+            // 第四段：西邊海岸線 (上至下/北至南) - 視覺上應往下移動
+            { id: 'changhua', name: '彰化縣', grid: 'col-start-5 row-start-2', color: 'bg-rose-500', direction: 'down' },
+            { id: 'yunlin', name: '雲林縣', grid: 'col-start-5 row-start-3', color: 'bg-fuchsia-600', direction: 'down' }, 
+            { id: 'chiayicty', name: '嘉義縣', grid: 'col-start-5 row-start-4', color: 'bg-pink-400', direction: 'down' }, // 嘉義縣作為折返點前一站
         ];
         
-        // 16 個縣市的環島順序定義
         const TAIWAN_PATH_POINTS = [
+            // 南部海岸 (起點)
             { id: 'tainan', name: '台南市', progress: 0.0000 },
             { id: 'kaohsiung', name: '高雄市', progress: 0.0625 },
             { id: 'pingtung', name: '屏東縣', progress: 0.1250 },
+            // 東部海岸
             { id: 'taitung', name: '台東縣', progress: 0.1875 },
             { id: 'hualien', name: '花蓮縣', progress: 0.2500 },
             { id: 'yilan', name: '宜蘭縣', progress: 0.3125 },
+            // 北部海岸
             { id: 'keelung', name: '基隆市', progress: 0.3750 },
             { id: 'newtaipei', name: '新北市', progress: 0.4375 },
             { id: 'taipei', name: '台北市', progress: 0.5000 },
             { id: 'taoyuan', name: '桃園市', progress: 0.5625 },
             { id: 'hsinchucty', name: '新竹縣', progress: 0.6250 },
+            // 西部海岸 (南下)
             { id: 'miaoli', name: '苗栗縣', progress: 0.6875 },
             { id: 'taichung', name: '台中市', progress: 0.7500 },
             { id: 'changhua', name: '彰化縣', progress: 0.8125 },
             { id: 'yunlin', name: '雲林縣', progress: 0.8750 },
             { id: 'chiayicty', name: '嘉義縣', progress: 0.9375 },
-            { id: 'tainan_end', name: '回到台南', progress: 1.0000 }, 
+            { id: 'tainan_end', name: '回到台南', progress: 1.0000 }, // 終點/起點
         ];
-
-
-        // ==== Firebase Functions ====
         
-        /**
-         * 初始化 Firebase 應用程式和身份驗證
-         */
-        async function initFirebase() {
-            if (!firebaseConfig) {
-                console.error("Firebase config is missing. Cannot initialize Firebase. This app will not function outside of the Canvas environment.");
-                updateAuthStatusUI("🔴 Firebase 配置遺失 (無法連接資料庫)");
-                return;
-            }
-            try {
-                const app = initializeApp(firebaseConfig);
-                db = getFirestore(app);
-                auth = getAuth(app);
+        // ==== Firestore & Auth Functions ====
+        
+        const getCollectionRef = () => {
+            // 資料儲存路徑為: /artifacts/{appId}/public/data/running_records
+            return collection(db, `artifacts/${appId}/public/data/running_records`);
+        };
+
+        function updateAuthStatusUI() {
+            const statusElement = document.getElementById('authStatus');
+            if (authReady && currentUserId) {
+                statusElement.textContent = `✅ 連線成功 (使用者 ID: ${currentUserId.substring(0, 8)}...)`;
+                statusElement.className = 'text-sm font-semibold text-green-700 p-2 rounded-lg bg-green-100 mb-4';
                 
-                // 設置身份驗證狀態監聽
-                onAuthStateChanged(auth, async (user) => {
-                    if (user) {
-                        userId = user.uid;
-                        isAuthReady = true;
-                        updateAuthStatusUI(`✅ 已連接 (用戶 ID: ${userId})`);
-                        setupRealtimeListener(); 
-                    } else {
-                        // 使用自訂令牌或匿名登入
-                        try {
-                            if (initialAuthToken) {
-                                await signInWithCustomToken(auth, initialAuthToken);
-                            } else {
-                                await signInAnonymously(auth);
-                            }
-                        } catch (e) {
-                            console.error("Authentication failed:", e);
-                            isAuthReady = true; 
-                            userId = crypto.randomUUID(); // Fallback to a random ID for local use
-                            updateAuthStatusUI(`⚠️ 驗證失敗 (使用本地 ID: ${userId})`, 'error');
-                            setupRealtimeListener(); 
-                        }
-                    }
-                });
-            } catch (e) {
-                console.error("Firebase initialization failed:", e);
-                updateAuthStatusUI("❌ Firebase 初始化失敗");
+                // 顯示完整的 App ID 和 User ID 給靜態頁面發佈者查看
+                if (!isCanvasEnvironment) {
+                     statusElement.title = `App ID: ${appId}\nUser ID: ${currentUserId}`;
+                }
+
+            } else if (authReady && !currentUserId) {
+                 statusElement.textContent = '❌ 連線錯誤，無法取得 ID。請檢查您的連線。';
+                statusElement.className = 'text-sm font-semibold text-red-700 p-2 rounded-lg bg-red-100 mb-4';
+            } else {
+                statusElement.textContent = '⌛ 正在連線到資料庫...';
+                statusElement.className = 'text-sm font-semibold text-yellow-700 p-2 rounded-lg bg-yellow-100 mb-4';
             }
         }
 
-        /**
-         * 設置 Firestore 實時監聽
-         */
-        function setupRealtimeListener() {
-            if (!db || !isAuthReady) return;
-
-            const recordsColRef = collection(db, 'artifacts', appId, 'public', 'data', 'running_records');
-            const q = query(recordsColRef); 
-            
-            onSnapshot(q, (snapshot) => {
-                const records = [];
-                snapshot.forEach(doc => {
-                    const data = doc.data();
-                    records.push({ id: doc.id, ...data });
-                });
+        async function initAuthAndListener() {
+            try {
+                // 如果在 Canvas 環境且有 token，則使用自訂 token 登入
+                if (isCanvasEnvironment && initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } 
                 
-                // 按時間戳記排序
-                records.sort((a, b) => b.timestamp - a.timestamp);
-                processRecords(records);
-            }, (error) => {
-                console.error("Firestore onSnapshot error:", error);
-                updateAuthStatusUI(`⚠️ 數據監聽失敗: ${error.message}`, 'error');
+                // 否則 (在 GitHub Pages 或沒有 token 的 Canvas) 則使用匿名登入
+                if (!auth.currentUser) {
+                    await signInAnonymously(auth);
+                } 
+                
+                currentUserId = auth.currentUser ? auth.currentUser.uid : null;
+
+                authReady = true;
+                updateAuthStatusUI();
+
+                if (currentUserId && !listenerActive) {
+                    setupRealtimeListener();
+                    listenerActive = true;
+                }
+
+            } catch (error) {
+                console.error("Critical Firebase Initialization/Auth Error:", error);
+                authReady = true; 
+                updateAuthStatusUI();
+                showMessageBox("無法連線到資料庫或權限錯誤。請檢查您的 Firebase 配置。", "error");
+            }
+        }
+        
+        async function waitForAuth() {
+            return new Promise((resolve) => {
+                if (authReady && currentUserId) {
+                    return resolve(true);
+                }
+                
+                const startTime = Date.now();
+                const checkInterval = setInterval(() => {
+                    if (authReady && currentUserId) {
+                        clearInterval(checkInterval);
+                        resolve(true);
+                    } else if (Date.now() - startTime > AUTH_TIMEOUT_MS) {
+                        clearInterval(checkInterval);
+                        resolve(false);
+                    }
+                }, 100);
             });
         }
+        
+        // ==== 數據刪除核心功能 (新增) ====
+        async function deleteAllRecords() {
+            const recordsRef = getCollectionRef();
+            const q = query(recordsRef);
+            
+            try {
+                // 1. 取得所有文件的快照
+                const snapshot = await getDocs(q); 
+                const batchSize = snapshot.docs.length;
 
+                if (batchSize === 0) {
+                    showMessageBox("目前沒有數據需要清除。", "info");
+                    return;
+                }
+                
+                const deleteButton = document.getElementById('confirmDeleteButton');
+                const originalText = deleteButton.textContent;
+                
+                deleteButton.disabled = true;
+                deleteButton.textContent = `🧹 正在清除 ${batchSize} 筆數據...`;
+
+                // 2. 逐一執行刪除操作
+                const deletePromises = snapshot.docs.map(doc => deleteDoc(doc.ref));
+
+                // 3. 等待所有刪除完成
+                await Promise.all(deletePromises);
+                
+                showMessageBox(`✅ 成功清除所有 ${batchSize} 筆跑步紀錄。`, "success");
+                
+            } catch (error) {
+                console.error("Error deleting all documents: ", error);
+                showMessageBox(`❌ 清除數據失敗 (錯誤: ${error.code || error.message})`, "error");
+            } finally {
+                const deleteButton = document.getElementById('confirmDeleteButton');
+                deleteButton.disabled = false;
+                deleteButton.textContent = originalText;
+                closeConfirmationModal();
+            }
+        }
+
+        /**
+         * 處理重置按鈕點擊，現在會觸發帶有密碼檢查的確認視窗。
+         */
+        function resetDataHandler() {
+            showConfirmationModal(
+                "⚠️ 管理者數據清除", 
+                "此操作將**永久刪除**應用程式中所有學生的跑步紀錄！清除後無法復原。請輸入管理者密碼繼續。", 
+                // 將執行刪除的邏輯包裝在一個函式中，並在內部進行密碼檢查
+                () => {
+                    const pinInput = document.getElementById('adminPinInput');
+                    const enteredPin = pinInput.value.trim();
+                    pinInput.value = ''; // 清空輸入框
+                    
+                    if (enteredPin === ADMIN_PIN) {
+                        deleteAllRecords();
+                    } else {
+                        showMessageBox("❌ 密碼錯誤！無法執行數據清除。", "error");
+                        closeConfirmationModal(); // 密碼錯誤也關閉視窗
+                    }
+                }
+            );
+        }
 
         // ==== DOMContentLoaded / Init ====
         document.addEventListener('DOMContentLoaded', () => {
@@ -163,6 +267,10 @@
             dateInput.value = today;
             form.addEventListener('submit', handleFormSubmit);
             
+            // 綁定重置按鈕事件
+            const resetButton = document.getElementById('resetDataButton');
+            resetButton.addEventListener('click', resetDataHandler);
+
             const generateButton = document.getElementById('generateReflectionButton');
             generateButton.addEventListener('click', (e) => {
                 e.preventDefault();
@@ -176,33 +284,31 @@
                 
                 generateReflection(name, studentId);
             });
+            
+            // 綁定確認對話框的動作
+            document.getElementById('confirmDeleteButton').addEventListener('click', () => {
+                // 取得儲存在按鈕上的 callback 函式
+                const callback = window.currentConfirmationCallback;
+                if (callback && typeof callback === 'function') {
+                    callback();
+                } else {
+                    closeConfirmationModal(); // 以防萬一
+                }
+            });
 
-            // 動態生成縣市色塊地圖
+            document.getElementById('cancelDeleteButton').addEventListener('click', closeConfirmationModal);
+
+
             buildBlockMap();
 
-            // 初始化 Firebase 和數據監聽
-            initFirebase(); 
-            updateAuthStatusUI("⏳ 正在連線到 Firebase...");
+            updateAuthStatusUI();
+            initAuthAndListener();
         });
 
+        // ... (handleFormSubmit, getCityInfoByProgress, generateReflection, setupRealtimeListener, processRecords, updateMap, getColorHash, getTextColor, showMessageBox functions remain the same)
+        
         /**
-         * 更新 Firebase 連線狀態 UI
-         */
-        function updateAuthStatusUI(message, type = 'info') {
-            const statusElement = document.getElementById('authStatus');
-            const classMap = {
-                info: 'text-sm font-semibold text-blue-700 p-2 rounded-lg bg-blue-100 mb-4',
-                error: 'text-sm font-semibold text-red-700 p-2 rounded-lg bg-red-100 mb-4',
-                success: 'text-sm font-semibold text-green-700 p-2 rounded-lg bg-green-100 mb-4'
-            };
-            
-            statusElement.textContent = message;
-            statusElement.className = classMap[type] || classMap.info;
-        }
-
-
-        /**
-         * 動態生成縣市色塊地圖
+         * 動態生成縣市色塊地圖 (保持不變)
          */
         function buildBlockMap() {
             const mapGrid = document.getElementById('taiwan-map-grid');
@@ -241,25 +347,21 @@
             });
         }
 
-
-        /**
-         * 處理表單提交 (Firestore 版本)
-         */
         async function handleFormSubmit(e) {
             e.preventDefault();
-            
-            if (!db || !userId) {
-                showMessageBox("資料庫尚未連線或用戶未驗證。請檢查連線狀態。", "error");
+            const authSuccess = await waitForAuth();
+            if (!authSuccess || !currentUserId) {
+                showMessageBox("無法取得使用者身份，請刷新頁面或確認連線狀態。", "error");
                 return;
             }
-
+            
             const name = document.getElementById('name').value.trim();
             const studentId = document.getElementById('studentId').value.trim();
             const date = document.getElementById('date').value;
             const laps = parseInt(document.getElementById('laps').value, 10);
 
             if (!name || !studentId || !date || isNaN(laps) || laps <= 0) {
-                showMessageBox("請確保所有欄位都已正確填寫，且圈數大於 0。", "error");
+                showMessageBox("請確保所有欄位都已正確填寫，且圈數大於 0。", "info");
                 return;
             }
             
@@ -271,8 +373,8 @@
                 date: date,
                 laps: laps,
                 distanceMeters: distanceMeters,
-                submittedBy: userId, 
-                timestamp: new Date().getTime()
+                submittedBy: currentUserId,
+                timestamp: serverTimestamp()
             };
 
             const submitButton = document.getElementById('submitButton');
@@ -280,24 +382,19 @@
             submitButton.textContent = '儲存中...';
 
             try {
-                const recordsColRef = collection(db, 'artifacts', appId, 'public', 'data', 'running_records');
-                await addDoc(recordsColRef, record);
-                
-                showMessageBox("跑步紀錄已成功儲存到雲端！", "success");
+                await addDoc(getCollectionRef(), record);
+                showMessageBox("跑步紀錄已成功儲存！", "success");
                 document.getElementById('laps').value = '';
                 
             } catch (error) {
-                console.error("Error saving document: ", error);
-                showMessageBox(`儲存紀錄失敗 (錯誤: ${error.message})`, "error");
+                console.error("Error adding document: ", error);
+                showMessageBox(`儲存紀錄失敗 (錯誤: ${error.code || error.message})`, "error");
             } finally {
                 submitButton.disabled = false;
                 submitButton.textContent = '提交紀錄';
             }
         }
         
-        /**
-         * 根據進度找到當前所在的縣市 ID、名稱和縣市內進度
-         */
         function getCityInfoByProgress(progress) {
             const currentProgress = progress % 1.0; 
             
@@ -307,7 +404,7 @@
 
                 if (currentProgress >= p1.progress && currentProgress < p2.progress) {
                     const segmentLength = p2.progress - p1.progress;
-                    const progressInCity = (currentProgress - p1.progress) / segmentLength; 
+                    const progressInCity = (currentProgress - p1.progress) / segmentLength; // 0.0 ~ 1.0
                     
                     return {
                         cityId: p1.id,
@@ -334,9 +431,6 @@
             };
         }
 
-        /**
-         * 產生 AI 心得
-         */
         async function generateReflection(studentName, studentId) {
             const reflectionBox = document.getElementById('aiReflectionContent');
             const generateButton = document.getElementById('generateReflectionButton');
@@ -349,7 +443,7 @@
 
             generateButton.disabled = true;
             generateButton.innerHTML = '✨ 正在產生心得...';
-            reflectionBox.innerHTML = '<p class="text-gray-500 animate-pulse">正在與 AI 教練連線，請稍候... (外部請求可能會被 iFrame 阻擋)</p>';
+            reflectionBox.innerHTML = '<p class="text-gray-500 animate-pulse">正在與 AI 教練連線，請稍候...</p>';
             
             const totalDistance = student.totalDistanceM;
             const totalKm = (totalDistance / 1000).toFixed(2);
@@ -400,13 +494,13 @@
                     if (i < maxRetries - 1) {
                         await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000));
                     } else {
-                        resultText = `很抱歉，AI 教練連線失敗，請稍後再試。 (${error.message})。可能的原因是 iFrame 阻擋了外部網路連線。`;
+                        resultText = `很抱歉，AI 教練連線失敗，請稍後再試。 (${error.message})`;
                     }
                 }
             }
 
             if (resultText) {
-                 reflectionBox.innerHTML = `<p class="text-gray-700 leading-relaxed italic border-l-4 border-purple-400 pl-4">${resultText}</p>`;
+                 reflectionBox.innerHTML = `<p class="text-gray-700 leading-relaxed italic border-l-4 border-indigo-400 pl-4">${resultText}</p>`;
             } else {
                  reflectionBox.innerHTML = '<p class="text-red-500">AI 教練未能產生心得。請檢查網路連線或稍後再試。</p>';
             }
@@ -415,9 +509,21 @@
             generateButton.innerHTML = '✨ 取得 AI 跑步心得';
         }
         
-        /**
-         * 處理紀錄並更新 UI (排行榜和地圖)
-         */
+        function setupRealtimeListener() {
+            const recordsQuery = query(getCollectionRef(), orderBy("timestamp", "desc"));
+
+            onSnapshot(recordsQuery, (snapshot) => {
+                const allRecords = [];
+                snapshot.forEach((doc) => {
+                    allRecords.push(doc.data());
+                });
+                processRecords(allRecords);
+            }, (error) => {
+                console.error("Error listening to running records:", error);
+                showMessageBox("無法連接到資料庫或權限不足。無法顯示排行榜。", "error");
+            });
+        }
+
         function processRecords(records) {
             const studentTotals = {};
             const leaderboard = document.getElementById('leaderboard');
@@ -461,13 +567,22 @@
         }
 
         /**
-         * 更新地圖上的標記位置和進度條
+         * 核心更新函式：現在會根據縣市方向來繪製進度條和標記
          */
         function updateMap(students) {
+            // 清理所有縣市的標記和進度條
             CITIES_DATA.forEach(city => {
                 const container = document.getElementById(`marker-container-${city.id}`);
                 if (container) {
                     container.innerHTML = '';
+                }
+                const cityBlock = document.getElementById(`block-${city.id}`);
+                const progressBar = document.getElementById(`progress-bar-${city.id}`);
+                 if (progressBar && progressBar.parentElement) {
+                    progressBar.parentElement.removeChild(progressBar);
+                    // 清除為防止重複添加進度條
+                    const existingBars = cityBlock.querySelectorAll('.progress-bar-student');
+                    existingBars.forEach(bar => bar.remove());
                 }
             });
 
@@ -477,14 +592,20 @@
                 const currentLapProgress = (totalDistance % ISLAND_LAP_DISTANCE_M) / ISLAND_LAP_DISTANCE_M;
                 
                 const { cityId, progressInCity } = getCityInfoByProgress(currentLapProgress);
+                const cityData = CITIES_DATA.find(c => c.id === cityId); // 取得縣市資料，包括方向
+                
+                if (!cityData) return;
+                const direction = cityData.direction; // 'left', 'up', 'right', or 'down'
 
                 const cityBlock = document.getElementById(`block-${cityId}`);
                 const container = document.getElementById(`marker-container-${cityId}`);
                 
                 if (!cityBlock || !container) return; 
 
-                // 1. 縣市內的進度條 (位於方塊底部)
+                // 1. 縣市內的進度條 (Progress Bar)
                 let progressBar = document.getElementById(`progress-bar-${student.studentId}`);
+                
+                // 檢查並移除舊的進度條 (如果它存在於錯誤的縣市塊中)
                 if (progressBar && progressBar.parentElement !== cityBlock) {
                     progressBar.parentElement.removeChild(progressBar);
                     progressBar = null; 
@@ -493,24 +614,70 @@
                 if (!progressBar) {
                     progressBar = document.createElement('div');
                     progressBar.id = `progress-bar-${student.studentId}`;
-                    progressBar.className = 'absolute bottom-0 left-0 h-1 transition-all duration-1000 ease-out z-0 opacity-80';
+                    progressBar.className = 'absolute transition-all duration-1000 ease-out z-0 opacity-80 progress-bar-student';
                     cityBlock.appendChild(progressBar);
                 }
                 
-                progressBar.style.width = `${progressInCity * 100}%`;
+                // 重設樣式，避免方向衝突
+                progressBar.style.top = '';
+                progressBar.style.bottom = '';
+                progressBar.style.left = '';
+                progressBar.style.right = '';
+                progressBar.style.width = '';
+                progressBar.style.height = ''; 
+
+                const progressPercent = `${progressInCity * 100}%`;
                 progressBar.style.backgroundColor = getColorHash(student.studentId);
                 
-                // 2. 標記 (Marker) (位於進度條末端)
-                const markerX = `calc(${progressInCity * 100}% - 12px)`; 
+                const barThickness = '4px';
+
+                // 根據方向設定進度條的錨點和尺寸
+                switch (direction) {
+                    case 'right': // 左到右 (L->R)
+                        progressBar.style.bottom = '0';
+                        progressBar.style.left = '0';
+                        progressBar.style.height = barThickness;
+                        progressBar.style.width = progressPercent;
+                        break;
+                    case 'left': // 右到左 (R->L)
+                        progressBar.style.bottom = '0';
+                        progressBar.style.right = '0'; // 錨定在右側
+                        progressBar.style.height = barThickness;
+                        progressBar.style.width = progressPercent;
+                        break;
+                    case 'up': // 底到上 (B->T)
+                        progressBar.style.bottom = '0';
+                        progressBar.style.left = '0'; 
+                        progressBar.style.width = barThickness;
+                        progressBar.style.height = progressPercent;
+                        break;
+                    case 'down': // 上到下 (T->B)
+                        progressBar.style.top = '0';
+                        progressBar.style.right = '0'; 
+                        progressBar.style.width = barThickness;
+                        progressBar.style.height = progressPercent;
+                        break;
+                }
+                
+                // 2. 標記 (Marker)
+                const markerSizeHalf = 12; // 標記寬度 24px 的一半
+                const markerPosition = `calc(${progressInCity * 100}% - ${markerSizeHalf}px)`; // 標記中心應位於進度百分比處
                 
                 let marker = document.getElementById(`marker-${student.studentId}`);
                 if (!marker) {
                     marker = document.createElement('div');
                     marker.id = `marker-${student.studentId}`;
-                    marker.className = `student-marker absolute w-6 h-6 rounded-full shadow-lg border-2 border-white flex items-center justify-center font-bold text-xs transform transition-all duration-1000 ease-out z-30`;
+                    marker.className = `student-marker absolute w-6 h-6 rounded-full shadow-lg border-2 border-white flex items-center justify-center font-bold text-xs transition-all duration-1000 ease-out z-30`;
                     container.appendChild(marker); 
                 }
                 
+                // 重設標記樣式
+                marker.style.top = '';
+                marker.style.left = '';
+                marker.style.right = '';
+                marker.style.bottom = '';
+                marker.style.transform = ''; // 清除 transform，重新設定
+
                 const color = getColorHash(student.studentId);
                 marker.style.backgroundColor = color;
                 marker.style.color = getTextColor(color);
@@ -518,8 +685,31 @@
                 
                 marker.textContent = student.studentId; 
                 
-                marker.style.left = markerX;
-                marker.style.bottom = `-2px`; 
+                // 根據方向設定標記的錨點和位移
+                const markerOffset = '-2px'; // 讓標記略微超出邊緣
+                
+                switch (direction) {
+                    case 'right': // L->R: 錨定在底部和左側
+                        marker.style.bottom = markerOffset;
+                        marker.style.left = markerPosition;
+                        marker.style.transform = 'translateX(-50%)'; // 水平居中
+                        break;
+                    case 'left': // R->L: 錨定在底部和右側
+                        marker.style.bottom = markerOffset;
+                        marker.style.right = markerPosition;
+                        marker.style.transform = 'translateX(50%)'; // 水平居中
+                        break;
+                    case 'up': // B->T: 錨定在左側和底部
+                        marker.style.left = markerOffset;
+                        marker.style.bottom = markerPosition;
+                        marker.style.transform = 'translateY(50%)'; // 垂直居中
+                        break;
+                    case 'down': // T->B: 錨定在右側和頂部
+                        marker.style.right = markerOffset;
+                        marker.style.top = markerPosition;
+                        marker.style.transform = 'translateY(-50%)'; // 垂直居中
+                        break;
+                }
                 
                 if (marker.parentElement !== container) {
                     container.appendChild(marker);
@@ -527,9 +717,6 @@
             });
         }
         
-        /**
-         * 簡單的文字轉顏色 Hash 函數
-         */
         function getColorHash(str) {
             let hash = 0;
             for (let i = 0; i < str.length; i++) {
@@ -543,9 +730,6 @@
             return color;
         }
 
-        /**
-         * 根據背景色選擇合適的文字顏色 (黑或白)
-         */
         function getTextColor(hexcolor) {
             const r = parseInt(hexcolor.substring(1, 3), 16);
             const g = parseInt(hexcolor.substring(3, 5), 16);
@@ -554,9 +738,6 @@
             return (brightness > 150) ? 'black' : 'white';
         }
 
-        /**
-         * 顯示自訂訊息框 (取代 alert/confirm)
-         */
         function showMessageBox(message, type = 'info') {
             const box = document.getElementById('messageBox');
             const content = document.getElementById('messageContent');
@@ -583,6 +764,29 @@
             box.classList.remove('translate-x-full');
         }
         
+        /**
+         * 顯示自訂確認對話框，現在包含密碼輸入欄位
+         */
+        function showConfirmationModal(title, message, callback) {
+            const modal = document.getElementById('confirmModal');
+            document.getElementById('confirmTitle').textContent = title;
+            document.getElementById('confirmMessage').innerHTML = message;
+            
+            // 將 callback 儲存為 window 屬性，以便在按鈕點擊事件中調用
+            window.currentConfirmationCallback = callback; 
+            
+            modal.classList.remove('hidden');
+            // 每次開啟時，清空密碼輸入並讓其聚焦
+            const pinInput = document.getElementById('adminPinInput');
+            pinInput.value = '';
+            setTimeout(() => pinInput.focus(), 100);
+        }
+
+        function closeConfirmationModal() {
+            document.getElementById('confirmModal').classList.add('hidden');
+            window.currentConfirmationCallback = null;
+        }
+
     </script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&family=Noto+Sans+TC:wght@100..900&display=swap');
@@ -594,46 +798,50 @@
 
         /* 色塊地圖網格容器 */
         #taiwan-map-grid {
+            /* 調整為 5x5 矩形佈局 */
             display: grid;
             grid-template-columns: repeat(5, minmax(0, 1fr)); 
-            grid-template-rows: repeat(5, minmax(80px, 1fr)); 
-            gap: 4px; 
+            grid-template-rows: repeat(5, minmax(80px, 1fr)); /* 確保每行有最小高度 */
+            gap: 4px; /* 增加間隙 */
             background-color: #ecf0f1; 
             border-radius: 1rem;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
             width: 100%;
             height: auto;
-            overflow: hidden; 
+            overflow: hidden; /* 隱藏圓角外的部分 */
         }
         
         /* 定義每個縣市方塊的共同樣式 */
         .city-block {
             @apply p-2 text-white font-bold text-base flex items-center justify-center shadow-inner transition-all duration-300 ease-in-out cursor-default;
-            border: 2px solid rgba(255, 255, 255, 0.6); 
+            border: 2px solid rgba(255, 255, 255, 0.6); /* 白色邊框強調分離 */
             min-height: 80px; 
-            overflow: hidden; 
+            overflow: hidden; /* 確保內容不會溢出 */
         }
 
+        /* 讓文字在方塊中居中，並確保標記可以正確定位 */
         .city-block > span {
             text-shadow: 0 0 4px rgba(0, 0, 0, 0.4);
         }
 
         .student-marker {
+            /* 標記大小調整 */
             width: 24px;
             height: 24px;
-            transform: translateX(-50%);
-            border: 3px solid white; 
+            /* transform: translateX(-50%); <-- 移除，改由 JS 根據方向動態設定 */
+            border: 3px solid white; /* 強調標記 */
         }
         
         /* 中央競賽主題區塊 CSS */
         .grid-center-area {
-            grid-column: 2 / 5; 
-            grid-row: 2 / 5;    
-            background-color: #ffffff; 
-            border: 4px dashed #6366f1; 
+            grid-column: 2 / 5; /* 橫跨第 2 到第 4 列 */
+            grid-row: 2 / 5;    /* 橫跨第 2 到第 4 行 */
+            background-color: #ffffff; /* 白色背景與周圍地圖區塊形成對比 */
+            border: 4px dashed #6366f1; /* 虛線邊框強調中央競賽區 */
             border-radius: 1rem;
             box-shadow: 0 0 20px rgba(99, 102, 241, 0.3);
-            z-index: 5; 
+            z-index: 5; /* 確保它在進度條之上 */
+            /* 加入動畫效果 */
             animation: pulse-border 3s infinite;
         }
         
@@ -648,7 +856,7 @@
 
     <div class="container mx-auto p-4 lg:p-8">
         <header class="text-center mb-8">
-            <h1 class="text-4xl font-extrabold text-indigo-700 mb-2">🏃‍♂️ 學生環島跑步里程儀 (Firebase 版) 🇹🇼</h1>
+            <h1 class="text-4xl font-extrabold text-indigo-700 mb-2">🏃‍♂️ 學生環島跑步里程儀 (矩形環狀跑道 Beta 4) 🇹🇼</h1>
             <p class="text-xl text-gray-600">跑步進度視覺化：沿著矩形環狀跑道順時針繞行！</p>
             <p class="text-sm text-gray-500 mt-1">虛擬環島跑道一圈為 <span class="font-bold text-red-500">50,000 公尺 (50 公里)</span>。</p>
         </header>
@@ -659,8 +867,8 @@
             <div class="lg:col-span-1 bg-white p-6 rounded-2xl shadow-xl h-fit sticky top-8">
                 <h2 class="text-2xl font-bold text-indigo-600 mb-4 border-b pb-2">輸入今日跑步紀錄</h2>
                 
-                <div id="authStatus" class="text-sm font-semibold text-blue-700 p-2 rounded-lg bg-blue-100 mb-4">
-                    ⏳ 正在連線到 Firebase...
+                <div id="authStatus" class="text-sm font-semibold text-yellow-700 p-2 rounded-lg bg-yellow-100 mb-4">
+                    ⌛ 正在連線到資料庫...
                 </div>
                 
                 <form id="recordForm" class="space-y-4">
@@ -688,7 +896,7 @@
                     <button type="submit" id="submitButton" class="w-full py-3 px-4 border border-transparent rounded-lg shadow-md text-base font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-colors duration-200">
                         提交紀錄
                     </button>
-                    <p class="text-xs text-gray-500 text-center mt-2">資料將儲存於雲端資料庫。</p>
+                    <p class="text-xs text-gray-500 text-center mt-2">資料將儲存於雲端資料庫 (Firestore)。</p>
                 </form>
                 
                 <!-- AI 教練分析區 -->
@@ -705,6 +913,14 @@
                     <div id="aiReflectionContent" class="mt-4 p-4 bg-purple-50 rounded-lg min-h-[50px] flex items-center justify-center">
                         <p class="text-gray-500 text-sm">點擊上方按鈕開始分析...</p>
                     </div>
+                </div>
+
+                <!-- 重置數據按鈕 -->
+                <div class="mt-6 border-t pt-6">
+                    <button type="button" id="resetDataButton" class="w-full py-3 px-4 border border-transparent rounded-lg shadow-md text-base font-medium text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors duration-200">
+                        🗑️ 重置所有數據 (需管理者密碼)
+                    </button>
+                    <p class="text-xs text-red-500 text-center mt-2">此為**永久操作**，將清除所有紀錄！</p>
                 </div>
             </div>
 
@@ -752,6 +968,29 @@
             <span id="messageIcon" class="text-xl mr-2"></span>
             <span id="messageContent" class="font-medium"></span>
             <button onclick="document.getElementById('messageBox').classList.add('translate-x-full')" class="ml-4 text-gray-500 hover:text-gray-700">&times;</button>
+        </div>
+    </div>
+    
+    <!-- 自訂確認對話框 (現在包含密碼輸入) -->
+    <div id="confirmModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+        <div class="bg-white rounded-xl p-8 max-w-lg mx-4 shadow-2xl transform transition-all scale-100">
+            <h3 id="confirmTitle" class="text-2xl font-bold text-red-600 mb-4 border-b pb-2"></h3>
+            <p id="confirmMessage" class="text-gray-700 mb-4 leading-relaxed"></p>
+            
+            <!-- 密碼輸入欄位 (新增) -->
+            <div class="mb-6">
+                <label for="adminPinInput" class="block text-sm font-medium text-gray-700 mb-2">管理者密碼</label>
+                <input type="password" id="adminPinInput" class="block w-full rounded-lg border-gray-300 shadow-sm p-3 focus:border-red-500 focus:ring-red-500" placeholder="請輸入密碼">
+            </div>
+
+            <div class="flex justify-end space-x-4">
+                <button id="cancelDeleteButton" class="px-6 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-100 transition-colors">
+                    取消
+                </button>
+                <button id="confirmDeleteButton" class="px-6 py-2 border border-transparent rounded-lg text-white bg-red-600 hover:bg-red-700 transition-colors shadow-lg">
+                    確認刪除
+                </button>
+            </div>
         </div>
     </div>
 </body>
