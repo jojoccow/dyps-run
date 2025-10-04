@@ -472,6 +472,9 @@
             };
         }
 
+        /**
+         * 🚨 修正 AI 教練功能：增強錯誤處理和內容驗證
+         */
         async function generateReflection(studentName, studentId) {
             if (!currentUserId) {
                  showMessageBox("請先登入才能使用 AI 教練功能。", "info");
@@ -525,22 +528,31 @@
                     });
 
                     if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
+                        // 如果 HTTP 狀態碼不是 2xx，拋出錯誤並讓 catch 處理重試
+                        const errorBody = await response.text();
+                        throw new Error(`HTTP error! status: ${response.status}. Body: ${errorBody.substring(0, 100)}...`);
                     }
 
                     const result = await response.json();
-                    resultText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+                    const candidateText = result.candidates?.[0]?.content?.parts?.[0]?.text;
                     
-                    if (resultText) {
-                        break; 
+                    if (candidateText) {
+                        resultText = candidateText;
+                        break; // 成功取得內容，跳出迴圈
+                    } else {
+                         // 成功連線但沒有內容，視為暫時性錯誤，嘗試重試
+                         console.warn("AI API returned 200 OK but no text content:", JSON.stringify(result, null, 2));
+                         throw new Error("Missing content in AI response.");
                     }
 
                 } catch (error) {
                     console.error(`Attempt ${i + 1} failed:`, error);
                     if (i < maxRetries - 1) {
+                        // 實施指數退避 (1s, 2s)
                         await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000));
                     } else {
-                        resultText = `很抱歉，AI 教練連線失敗，請稍後再試。 (${error.message})`;
+                        // 最後一次嘗試失敗
+                        resultText = `很抱歉，AI 教練連線失敗，請稍後再試。 (錯誤訊息: ${error.message})`;
                     }
                 }
             }
@@ -548,6 +560,7 @@
             if (resultText) {
                  reflectionBox.innerHTML = `<p class="text-gray-700 leading-relaxed italic border-l-4 border-indigo-400 pl-4">${resultText}</p>`;
             } else {
+                 // 確保在所有嘗試都失敗且沒有設置錯誤訊息時顯示通用錯誤
                  reflectionBox.innerHTML = '<p class="text-red-500">AI 教練未能產生心得。請檢查網路連線或稍後再試。</p>';
             }
 
