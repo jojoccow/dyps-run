@@ -7,7 +7,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, query, onSnapshot, orderBy, serverTimestamp, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
@@ -23,7 +23,7 @@
         // **********************************************
 
         // ==== IMPORTANT: START Firebase Config (FOR GH Pages / Static Hosting) ====
-        // 使用者提供的 dyps-run 配置
+        // 使用者提供的 dyps-run 配置 (僅供參考/備用)
         const GH_PAGES_FIREBASE_CONFIG = {
             apiKey: "AIzaSyCuxRrZXNPrKWx9nrRiZyY_plxUkSISeFo",
             authDomain: "dyps-run.firebaseapp.com",
@@ -55,10 +55,9 @@
         // Constants (保持不變)
         const LAPS_TO_METERS = 200; 
         const ISLAND_LAP_DISTANCE_M = 50000; 
-        const AUTH_TIMEOUT_MS = 5000; 
 
         let currentUserId = null;
-        let authReady = false;
+        let authReady = false; // Auth state listener has completed its first check
         let studentTotalsData = {}; 
         let listenerActive = false; 
         
@@ -165,69 +164,55 @@
         }
 
         /**
-         * 驗證初始化函式，加入了更詳細的錯誤處理。
+         * 核心修正：使用 onAuthStateChanged 確保驗證和監聽的同步性
          */
-        async function initAuthAndListener() {
-            try {
-                // 1. 嘗試使用自訂 Token 登入 (Canvas 環境)
-                if (isCanvasEnvironment && initialAuthToken) {
-                    await signInWithCustomToken(auth, initialAuthToken);
-                } 
+        function initAuthAndListener() {
+            // 1. 啟動 Firebase 身份驗證狀態監聽
+            onAuthStateChanged(auth, (user) => {
+                authReady = true; // 標記 Auth 已經檢查完畢
                 
-                // 2. 如果尚未登入，則回退到匿名登入 (GitHub Pages 或一般部署環境)
-                if (!auth.currentUser) {
-                    await signInAnonymously(auth); 
-                } 
-                
-                currentUserId = auth.currentUser ? auth.currentUser.uid : null;
-
-                if (currentUserId) {
-                    authReady = true;
+                if (user) {
+                    // 驗證成功，取得 User ID
+                    currentUserId = user.uid;
                     updateAuthStatusUI();
-                    // 只有在驗證成功後才設定監聽器，確保數據可以載入
+                    
+                    // 只有在第一次驗證成功時啟動 Realtime Listener
                     if (!listenerActive) {
                         setupRealtimeListener();
                         listenerActive = true;
                     }
                 } else {
-                    throw new Error("Authentication failed: Could not retrieve User ID after sign-in attempt.");
-                }
-
-            } catch (error) {
-                console.error("Critical Firebase Auth Error:", error);
-                
-                let userMessage = "❌ Firebase 連線錯誤！";
-                if (error.code === 'auth/operation-not-allowed') {
-                    userMessage += "請立即檢查您的 **Firebase > Authentication > 登入方式**，**啟用匿名驗證 (Anonymous)**！";
-                } else {
-                     userMessage += `請檢查您的後台設定。 (錯誤碼: ${error.code || 'UNKNOWN'})`;
-                }
-
-                showMessageBox(userMessage, "error");
-                
-                authReady = true; 
-                currentUserId = null;
-                updateAuthStatusUI(); 
-            }
-        }
-        
-        async function waitForAuth() {
-            return new Promise((resolve) => {
-                if (authReady && currentUserId) {
-                    return resolve(true);
-                }
-                
-                const startTime = Date.now();
-                const checkInterval = setInterval(() => {
-                    if (authReady && currentUserId) {
-                        clearInterval(checkInterval);
-                        resolve(true);
-                    } else if (Date.now() - startTime > AUTH_TIMEOUT_MS) {
-                        clearInterval(checkInterval);
-                        resolve(false);
+                    // 驗證失敗或登出
+                    currentUserId = null;
+                    updateAuthStatusUI();
+                    // 如果是第一次載入，嘗試登入
+                    if (!listenerActive) {
+                         attemptSignIn(); // 嘗試登入，登入成功會觸發 onAuthStateChanged
                     }
-                }, 100);
+                }
             });
+            
+            // 2. 立即嘗試登入 (非同步)
+            attemptSignIn(); 
+        }
+
+        /**
+         * 嘗試使用自訂 Token 或匿名登入
+         */
+        async function attemptSignIn() {
+            try {
+                if (isCanvasEnvironment && initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    // Fallback to anonymous sign-in for persistence
+                    await signInAnonymously(auth);
+                }
+                // 成功登入後，onAuthStateChanged 會自動處理後續流程
+            } catch (error) {
+                console.error("Firebase Sign-in Attempt Failed:", error);
+                // 登入失敗的 UI 會在 onAuthStateChanged 處理 (user = null)
+                showMessageBox(`❌ Firebase 驗證失敗: ${error.code || error.message}. 請檢查後台設定!`, "error");
+            }
         }
         
         // ==== 數據刪除核心功能 (保持不變) ====
@@ -329,10 +314,10 @@
             buildBlockMap();
 
             updateAuthStatusUI();
-            initAuthAndListener();
+            initAuthAndListener(); // 啟動監聽和登入流程
         });
 
-        // 以下函式保持不變：
+        // 移除 waitForAuth 函式，因為我們現在使用 onAuthStateChanged
         
         /**
          * 動態生成縣市色塊地圖 (保持不變)
@@ -376,9 +361,11 @@
 
         async function handleFormSubmit(e) {
             e.preventDefault();
-            const authSuccess = await waitForAuth();
-            if (!authSuccess || !currentUserId) {
+            
+            if (!currentUserId) {
                 showMessageBox("無法取得使用者身份，請刷新頁面或確認連線狀態。", "error");
+                // 再次嘗試登入，以防 onAuthStateChanged 失敗
+                attemptSignIn();
                 return;
             }
             
@@ -412,6 +399,7 @@
             submitButton.textContent = '儲存中...';
 
             try {
+                // 提交資料到 Firestore
                 await addDoc(getCollectionRef(), record);
                 showMessageBox("跑步紀錄已成功儲存！", "success");
                 document.getElementById('laps').value = '';
@@ -444,6 +432,7 @@
                 }
             }
             
+            // 處理完成一圈後回到起點但進度尚未重置的情況
             if (currentProgress === 0.0 && progress > 0) {
                  const startCity = TAIWAN_PATH_POINTS[0];
                  return {
@@ -453,6 +442,7 @@
                 };
             }
             
+            // 預設為起點 (台南)
             const startCity = TAIWAN_PATH_POINTS[0];
             return {
                 cityId: startCity.id,
@@ -542,6 +532,8 @@
         function setupRealtimeListener() {
             // 查詢所有紀錄，並依照時間戳記倒序排列 (確保最新紀錄先顯示)
             const recordsQuery = query(getCollectionRef(), orderBy("timestamp", "desc"));
+            const leaderboard = document.getElementById('leaderboard');
+            leaderboard.innerHTML = '<li class="p-3 text-gray-500 text-center animate-pulse">🏃 正在從雲端載入數據...</li>';
 
             // onSnapshot 訂閱即時數據變化
             onSnapshot(recordsQuery, (snapshot) => {
@@ -563,7 +555,7 @@
             
             leaderboard.innerHTML = ''; 
             
-            // 核心邏輯：根據 studentId 累計總里程
+            // 核心邏輯：根據 studentId 累計總里程 (跨日期)
             records.forEach(record => {
                 const key = record.studentId;
                 if (!studentTotals[key]) {
@@ -575,12 +567,20 @@
                     };
                 }
                 const distance = typeof record.distanceMeters === 'number' ? record.distanceMeters : 0;
-                studentTotals[key].totalDistanceM += distance;
+                // 即使是不同日期的紀錄也會被累加
+                studentTotals[key].totalDistanceM += distance; 
             });
             
             studentTotalsData = studentTotals;
             
             let students = Object.values(studentTotals);
+            
+            if (students.length === 0) {
+                 leaderboard.innerHTML = '<li class="p-3 text-gray-500 text-center">目前沒有任何跑步紀錄。請提交您的第一筆紀錄！</li>';
+                 updateMap([]); // 清空地圖標記
+                 return;
+            }
+            
             // 排序：總里程由高到低
             students.sort((a, b) => b.totalDistanceM - a.totalDistanceM);
 
