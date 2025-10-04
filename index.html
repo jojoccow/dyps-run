@@ -3,16 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>學生環島跑步紀錄視覺化:index.html</title>
+    <title>學生環島跑步紀錄視覺化 (Google 登入)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        // 移除 orderBy 的引用，因為現在排序在客戶端完成
+        // 🚨 關鍵變更：引入 GoogleAuthProvider, signInWithPopup, signOut
+        import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, query, onSnapshot, serverTimestamp, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
-        // 設置 Firebase/Firestore 的日誌級別，方便調試
         setLogLevel('debug');
 
         // ==== LLM API 配置 (保持不變) ====
@@ -24,7 +23,8 @@
         // **********************************************
 
         // ==== IMPORTANT: START Firebase Config (FOR GH Pages / Static Hosting) ====
-        // 使用者提供的 dyps-run 配置 (僅供參考/備用)
+        // 由於 Canvas 環境下可能無法使用 Custom Token/Anonymous，我們專門為 Google 登入提供 Firebase 設定
+        // 注意：在您的實際環境中，您需要確保 Google 登入已在 Firebase Console 中啟用。
         const GH_PAGES_FIREBASE_CONFIG = {
             apiKey: "AIzaSyCuxRrZXNPrKWx9nrRiZyY_plxUkSISeFo",
             authDomain: "dyps-run.firebaseapp.com",
@@ -42,7 +42,7 @@
             ? JSON.parse(__firebase_config) 
             : GH_PAGES_FIREBASE_CONFIG;
             
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        // 移除 initialAuthToken 的使用，改用 Google 登入
         
         const appId = isCanvasEnvironment 
             ? (typeof __app_id !== 'undefined' ? __app_id : 'default-running-app') 
@@ -52,13 +52,17 @@
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
         const auth = getAuth(app);
+        
+        // Google 身份驗證提供者
+        const googleProvider = new GoogleAuthProvider();
 
         // Constants (保持不變)
         const LAPS_TO_METERS = 200; 
         const ISLAND_LAP_DISTANCE_M = 50000; 
 
         let currentUserId = null;
-        let authReady = false; // Auth state listener has completed its first check
+        let currentUserName = '訪客'; // 儲存登入者的名稱或 Email
+        let authReady = false; 
         let studentTotalsData = {}; 
         let listenerActive = false; 
         
@@ -111,9 +115,6 @@
         
         // ==== Local Storage Functions (Input Persistence) ====
         
-        /**
-         * 儲存使用者的姓名和座號到瀏覽器本地儲存。
-         */
         function saveIdentity(name, studentId) {
             try {
                 localStorage.setItem('studentName', name);
@@ -123,15 +124,11 @@
             }
         }
 
-        /**
-         * 從瀏覽器本地儲存載入使用者的姓名和座號。
-         */
         function loadIdentity() {
             try {
                 const name = localStorage.getItem('studentName');
                 const studentId = localStorage.getItem('studentId');
                 
-                // 只有當元素存在時才設置值，避免錯誤
                 const nameInput = document.getElementById('name');
                 const studentIdInput = document.getElementById('studentId');
 
@@ -145,79 +142,100 @@
         // ==== Firestore & Auth Functions ====
         
         const getCollectionRef = () => {
-            // 數據儲存在公共集合，確保所有人都可讀寫和整合
             return collection(db, `artifacts/${appId}/public/data/running_records`);
         };
 
+        // 🚨 關鍵變更：更新 UI 狀態以反映 Google 登入狀態
         function updateAuthStatusUI() {
             const statusElement = document.getElementById('authStatus');
+            const signInButton = document.getElementById('signInButton');
+            const signOutButton = document.getElementById('signOutButton');
+            const recordFormDiv = document.getElementById('recordFormDiv'); // 包裹表單的 DIV
+            
             if (authReady && currentUserId) {
-                statusElement.textContent = `✅ 連線成功 (使用者 ID: ${currentUserId.substring(0, 8)}...)`;
+                // 已登入
+                statusElement.textContent = `✅ 已登入為：${currentUserName} (ID: ${currentUserId.substring(0, 8)}...)`;
                 statusElement.className = 'text-sm font-semibold text-green-700 p-2 rounded-lg bg-green-100 mb-4';
                 
-                if (!isCanvasEnvironment) {
-                     statusElement.title = `App ID: ${appId}\nUser ID: ${currentUserId}`;
-                }
-
+                signInButton.classList.add('hidden');
+                signOutButton.classList.remove('hidden');
+                recordFormDiv.classList.remove('hidden'); 
             } else if (authReady && !currentUserId) {
-                 statusElement.textContent = '❌ 連線錯誤，無法取得 ID。請檢查您的 Firebase 驗證設定。';
-                statusElement.className = 'text-sm font-semibold text-red-700 p-2 rounded-lg bg-red-100 mb-4';
+                // 未登入/登出
+                statusElement.textContent = '🔒 請使用 Google 帳號登入以提交您的跑步紀錄。';
+                statusElement.className = 'text-sm font-semibold text-blue-700 p-2 rounded-lg bg-blue-100 mb-4';
+                
+                signInButton.classList.remove('hidden');
+                signOutButton.classList.add('hidden');
+                recordFormDiv.classList.add('hidden'); 
             } else {
+                // 正在連線
                 statusElement.textContent = '⌛ 正在連線到資料庫...';
                 statusElement.className = 'text-sm font-semibold text-yellow-700 p-2 rounded-lg bg-yellow-100 mb-4';
+                
+                signInButton.classList.add('hidden');
+                signOutButton.classList.add('hidden');
+                recordFormDiv.classList.add('hidden'); 
+            }
+        }
+        
+        // 🚨 新增：Google 登入功能
+        async function signInWithGoogle() {
+            try {
+                const result = await signInWithPopup(auth, googleProvider);
+                // 登入成功，onAuthStateChanged 會自動處理後續流程
+                showMessageBox(`歡迎，${result.user.displayName || result.user.email}！您已成功登入。`, "success");
+            } catch (error) {
+                // 處理登入錯誤 (例如用戶關閉視窗)
+                console.error("Google Sign-in Failed:", error);
+                showMessageBox(`❌ Google 登入失敗: ${error.message}. 請稍後再試。`, "error");
+            }
+        }
+        
+        // 🚨 新增：登出功能
+        async function handleSignOut() {
+             try {
+                await signOut(auth);
+                showMessageBox("您已成功登出。", "info");
+                // 登出後 onAuthStateChanged 會更新 UI
+            } catch (error) {
+                console.error("Sign-out Failed:", error);
+                showMessageBox(`❌ 登出失敗: ${error.message}`, "error");
             }
         }
 
+
         /**
-         * 核心修正：使用 onAuthStateChanged 確保驗證和監聽的同步性
+         * 啟動 Firebase 身份驗證狀態監聽
          */
         function initAuthAndListener() {
-            // 1. 啟動 Firebase 身份驗證狀態監聽
             onAuthStateChanged(auth, (user) => {
-                authReady = true; // 標記 Auth 已經檢查完畢
+                authReady = true; 
                 
                 if (user) {
-                    // 驗證成功，取得 User ID
+                    // 已登入 (來自 Google 帳號)
                     currentUserId = user.uid;
+                    currentUserName = user.displayName || user.email; // 使用 Google 帳號的名稱或 email
                     updateAuthStatusUI();
                     
-                    // 只有在第一次驗證成功時啟動 Realtime Listener
                     if (!listenerActive) {
                         setupRealtimeListener();
                         listenerActive = true;
                     }
                 } else {
-                    // 驗證失敗或登出
+                    // 未登入/登出
                     currentUserId = null;
+                    currentUserName = '訪客';
                     updateAuthStatusUI();
-                    // 如果是第一次載入，嘗試登入
-                    if (!listenerActive) {
-                         attemptSignIn(); // 嘗試登入，登入成功會觸發 onAuthStateChanged
+                    listenerActive = false; // 重置監聽狀態，等待下次登入
+                    // 登出時清空排行榜，防止顯示錯誤數據
+                    const leaderboard = document.getElementById('leaderboard');
+                    if (leaderboard) {
+                        leaderboard.innerHTML = '<li class="p-3 text-gray-500 text-center">請先登入以查看排行榜。</li>';
+                        updateMap([]);
                     }
                 }
             });
-            
-            // 2. 立即嘗試登入 (非同步)
-            attemptSignIn(); 
-        }
-
-        /**
-         * 嘗試使用自訂 Token 或匿名登入
-         */
-        async function attemptSignIn() {
-            try {
-                if (isCanvasEnvironment && initialAuthToken) {
-                    await signInWithCustomToken(auth, initialAuthToken);
-                } else {
-                    // Fallback to anonymous sign-in for persistence
-                    await signInAnonymously(auth);
-                }
-                // 成功登入後，onAuthStateChanged 會自動處理後續流程
-            } catch (error) {
-                console.error("Firebase Sign-in Attempt Failed:", error);
-                // 登入失敗的 UI 會在 onAuthStateChanged 處理 (user = null)
-                showMessageBox(`❌ Firebase 驗證失敗: ${error.code || error.message}. 請檢查後台設定。`, "error");
-            }
         }
         
         // ==== 數據刪除核心功能 (保持不變) ====
@@ -276,7 +294,7 @@
             );
         }
 
-        // ==== DOMContentLoaded / Init (包含新的 Identity 載入) ====
+        // ==== DOMContentLoaded / Init ====
         document.addEventListener('DOMContentLoaded', () => {
             const form = document.getElementById('recordForm');
             const dateInput = document.getElementById('date');
@@ -284,7 +302,6 @@
             dateInput.value = today;
             form.addEventListener('submit', handleFormSubmit);
             
-            // 關鍵修正點：立即從本地儲存載入先前儲存的姓名和座號
             loadIdentity(); 
             
             const resetButton = document.getElementById('resetDataButton');
@@ -293,6 +310,11 @@
             const generateButton = document.getElementById('generateReflectionButton');
             generateButton.addEventListener('click', (e) => {
                 e.preventDefault();
+                // 在這裡我們仍然使用儲存在 localStorage 的姓名/座號來提取紀錄，但需要檢查是否已登入
+                if (!currentUserId) {
+                     showMessageBox("請先登入才能取得個人化 AI 心得。", "info");
+                     return;
+                }
                 const name = document.getElementById('name').value.trim();
                 const studentId = document.getElementById('studentId').value.trim();
                 
@@ -303,6 +325,10 @@
                 
                 generateReflection(name, studentId);
             });
+            
+            // 🚨 新增：登入/登出按鈕監聽器
+            document.getElementById('signInButton').addEventListener('click', signInWithGoogle);
+            document.getElementById('signOutButton').addEventListener('click', handleSignOut);
             
             document.getElementById('confirmDeleteButton').addEventListener('click', () => {
                 const callback = window.currentConfirmationCallback;
@@ -315,11 +341,9 @@
 
             document.getElementById('cancelDeleteButton').addEventListener('click', closeConfirmationModal);
 
-
             buildBlockMap();
 
-            updateAuthStatusUI();
-            initAuthAndListener(); // 啟動監聽和登入流程
+            initAuthAndListener(); // 啟動監聽和登入流程 (會等待 onAuthStateChanged)
         });
         
         /**
@@ -366,9 +390,7 @@
             e.preventDefault();
             
             if (!currentUserId) {
-                showMessageBox("無法取得使用者身份，請刷新頁面或確認連線狀態。", "error");
-                // 再次嘗試登入，以防 onAuthStateChanged 失敗
-                attemptSignIn();
+                showMessageBox("請先使用 Google 帳號登入才能提交紀錄。", "error");
                 return;
             }
             
@@ -382,28 +404,25 @@
                 return;
             }
             
-            // 儲存身份：確保重新整理後姓名/座號會自動填入
             saveIdentity(name, studentId); 
             
             const distanceMeters = laps * LAPS_TO_METERS;
 
             const record = {
                 name: name,
-                studentId: studentId,
+                studentId: studentId, // 仍使用座號/編號作為數據識別鍵
                 date: date,
                 laps: laps,
                 distanceMeters: distanceMeters,
-                submittedBy: currentUserId,
+                submittedBy: currentUserId, // 紀錄提交者 Google UID
                 timestamp: serverTimestamp()
             };
 
             const submitButton = document.getElementById('submitButton');
-            // 關鍵：鎖定按鈕並改變文字
             submitButton.disabled = true;
             submitButton.textContent = '儲存中...';
 
             try {
-                // 提交資料到 Firestore
                 await addDoc(getCollectionRef(), record);
                 showMessageBox("跑步紀錄已成功儲存！", "success");
                 document.getElementById('laps').value = '';
@@ -412,7 +431,7 @@
                 console.error("Error adding document: ", error);
                 showMessageBox(`儲存紀錄失敗 (錯誤: ${error.code || error.message})`, "error");
             } finally {
-                // 核心修正：無論成功或失敗，都在 finally 確保按鈕被重置
+                // 確保按鈕在任何情況下都會重置
                 submitButton.disabled = false;
                 submitButton.textContent = '提交紀錄';
             }
@@ -437,7 +456,6 @@
                 }
             }
             
-            // 處理完成一圈後回到起點但進度尚未重置的情況
             if (currentProgress === 0.0 && progress > 0) {
                  const startCity = TAIWAN_PATH_POINTS[0];
                  return {
@@ -447,7 +465,6 @@
                 };
             }
             
-            // 預設為起點 (台南)
             const startCity = TAIWAN_PATH_POINTS[0];
             return {
                 cityId: startCity.id,
@@ -457,6 +474,11 @@
         }
 
         async function generateReflection(studentName, studentId) {
+            if (!currentUserId) {
+                 showMessageBox("請先登入才能使用 AI 教練功能。", "info");
+                 return;
+            }
+
             const reflectionBox = document.getElementById('aiReflectionContent');
             const generateButton = document.getElementById('generateReflectionButton');
 
@@ -536,28 +558,28 @@
         
         /**
          * 啟動即時監聽器，從 Firestore 獲取所有數據。
-         * 修正：移除 orderBy() 以避免索引問題，確保數據順利載入。
          */
         function setupRealtimeListener() {
-            // 由於 Canvas 環境下 Firestore 索引可能未建立，我們移除 orderBy()，
-            // 這樣可以確保數據能夠被完整獲取，排序邏輯移至客戶端 (processRecords)。
+            if (!currentUserId && listenerActive) {
+                // 如果登出後 onAuthStateChanged 觸發，應避免啟動監聽
+                return;
+            }
+
             const recordsQuery = query(getCollectionRef()); 
             const leaderboard = document.getElementById('leaderboard');
             leaderboard.innerHTML = '<li class="p-3 text-gray-500 text-center animate-pulse">🏃 正在從雲端載入數據...</li>';
 
-            // onSnapshot 訂閱即時數據變化
             onSnapshot(recordsQuery, (snapshot) => {
                 const allRecords = [];
                 snapshot.forEach((doc) => {
                     allRecords.push(doc.data());
                 });
-                // 處理所有紀錄，計算總里程並更新 UI
                 processRecords(allRecords);
             }, (error) => {
                 console.error("Error listening to running records:", error);
-                // 增加提示，可能是權限或連線問題
                 showMessageBox("無法連接到資料庫或權限不足。無法顯示排行榜。", "error");
             });
+            listenerActive = true; 
         }
 
         function processRecords(records) {
@@ -566,7 +588,6 @@
             
             leaderboard.innerHTML = ''; 
             
-            // 核心邏輯：根據 studentId 累計總里程 (跨日期)
             records.forEach(record => {
                 const key = record.studentId;
                 if (!studentTotals[key]) {
@@ -578,7 +599,6 @@
                     };
                 }
                 const distance = typeof record.distanceMeters === 'number' ? record.distanceMeters : 0;
-                // 即使是不同日期的紀錄也會被累加
                 studentTotals[key].totalDistanceM += distance; 
             });
             
@@ -588,14 +608,12 @@
             
             if (students.length === 0) {
                  leaderboard.innerHTML = '<li class="p-3 text-gray-500 text-center">目前沒有任何跑步紀錄。請提交您的第一筆紀錄！</li>';
-                 updateMap([]); // 清空地圖標記
+                 updateMap([]); 
                  return;
             }
             
-            // 在客戶端進行排序：總里程由高到低
             students.sort((a, b) => b.totalDistanceM - a.totalDistanceM);
 
-            // 更新排行榜 UI
             students.forEach((student, index) => {
                 const totalKm = (student.totalDistanceM / 1000).toFixed(2);
                 const li = document.createElement('li');
@@ -610,10 +628,10 @@
                 leaderboard.appendChild(li);
             });
             
-            // 更新地圖視覺化
             updateMap(students);
         }
 
+        // ... (updateMap, getColorHash, getTextColor 保持不變)
         function updateMap(students) {
             CITIES_DATA.forEach(city => {
                 const container = document.getElementById(`marker-container-${city.id}`);
@@ -793,7 +811,7 @@
 
             setTimeout(() => {
                 box.classList.add('translate-x-full');
-            }, 8000); // 延長顯示時間，讓使用者有時間閱讀錯誤碼
+            }, 8000); 
             
             box.classList.remove('translate-x-full');
         }
@@ -827,49 +845,45 @@
 
         /* 色塊地圖網格容器 */
         #taiwan-map-grid {
-            /* 調整為 5x5 矩形佈局 */
             display: grid;
             grid-template-columns: repeat(5, minmax(0, 1fr)); 
-            grid-template-rows: repeat(5, minmax(80px, 1fr)); /* 確保每行有最小高度 */
-            gap: 4px; /* 增加間隙 */
+            grid-template-rows: repeat(5, minmax(80px, 1fr));
+            gap: 4px;
             background-color: #ecf0f1; 
             border-radius: 1rem;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
             width: 100%;
             height: auto;
-            overflow: hidden; /* 隱藏圓角外的部分 */
+            overflow: hidden;
         }
         
         /* 定義每個縣市方塊的共同樣式 */
         .city-block {
             @apply p-2 text-white font-bold text-base flex items-center justify-center shadow-inner transition-all duration-300 ease-in-out cursor-default;
-            border: 2px solid rgba(255, 255, 255, 0.6); /* 白色邊框強調分離 */
+            border: 2px solid rgba(255, 255, 255, 0.6);
             min-height: 80px; 
-            overflow: hidden; /* 確保內容不會溢出 */
+            overflow: hidden;
         }
 
-        /* 讓文字在方塊中居中，並確保標記可以正確定位 */
         .city-block > span {
             text-shadow: 0 0 4px rgba(0, 0, 0, 0.4);
         }
 
         .student-marker {
-            /* 標記大小調整 */
             width: 24px;
             height: 24px;
-            border: 3px solid white; /* 強調標記 */
+            border: 3px solid white;
         }
         
         /* 中央競賽主題區塊 CSS */
         .grid-center-area {
-            grid-column: 2 / 5; /* 橫跨第 2 到第 4 列 */
-            grid-row: 2 / 5;    /* 橫跨第 2 到第 4 行 */
-            background-color: #ffffff; /* 白色背景與周圍地圖區塊形成對比 */
-            border: 4px dashed #6366f1; /* 虛線邊框強調中央競賽區 */
+            grid-column: 2 / 5;
+            grid-row: 2 / 5;   
+            background-color: #ffffff;
+            border: 4px dashed #6366f1;
             border-radius: 1rem;
             box-shadow: 0 0 20px rgba(99, 102, 241, 0.3);
-            z-index: 5; /* 確保它在進度條之上 */
-            /* 加入動畫效果 */
+            z-index: 5;
             animation: pulse-border 3s infinite;
         }
         
@@ -884,7 +898,7 @@
 
     <div class="container mx-auto p-4 lg:p-8">
         <header class="text-center mb-8">
-            <h1 class="text-4xl font-extrabold text-indigo-700 mb-2">🏃‍♂️ 學生環島跑步里程儀 (矩形環狀跑道 Beta 4) 🇹🇼</h1>
+            <h1 class="text-4xl font-extrabold text-indigo-700 mb-2">🏃‍♂️ 學生環島跑步里程儀 (Google 登入版) 🇹🇼</h1>
             <p class="text-xl text-gray-600">跑步進度視覺化：沿著矩形環狀跑道順時針繞行！</p>
             <p class="text-sm text-gray-500 mt-1">虛擬環島跑道一圈為 <span class="font-bold text-red-500">50,000 公尺 (50 公里)</span>。</p>
         </header>
@@ -893,41 +907,59 @@
             
             <!-- 1. 資料輸入區 -->
             <div class="lg:col-span-1 bg-white p-6 rounded-2xl shadow-xl h-fit sticky top-8">
-                <h2 class="text-2xl font-bold text-indigo-600 mb-4 border-b pb-2">輸入今日跑步紀錄</h2>
+                <h2 class="text-2xl font-bold text-indigo-600 mb-4 border-b pb-2">身份驗證與紀錄輸入</h2>
                 
                 <div id="authStatus" class="text-sm font-semibold text-yellow-700 p-2 rounded-lg bg-yellow-100 mb-4">
                     ⌛ 正在連線到資料庫...
                 </div>
                 
-                <form id="recordForm" class="space-y-4">
-                    
-                    <div>
-                        <label for="name" class="block text-sm font-medium text-gray-700">姓名</label>
-                        <input type="text" id="name" required class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="請輸入姓名">
-                    </div>
-                    
-                    <div>
-                        <label for="studentId" class="block text-sm font-medium text-gray-700">座號 / 編號</label>
-                        <input type="text" id="studentId" required class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="例如：01 / A01">
-                    </div>
-
-                    <div>
-                        <label for="date" class="block text-sm font-medium text-gray-700">日期</label>
-                        <input type="date" id="date" required class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-3 focus:border-indigo-500 focus:ring-indigo-500">
-                    </div>
-
-                    <div>
-                        <label for="laps" class="block text-sm font-medium text-gray-700">跑步圈數 (200 公尺/圈)</label>
-                        <input type="number" id="laps" required min="1" class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="請輸入完成圈數">
-                    </div>
-
-                    <button type="submit" id="submitButton" class="w-full py-3 px-4 border border-transparent rounded-lg shadow-md text-base font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-colors duration-200">
-                        提交紀錄
-                    </button>
-                    <p class="text-xs text-gray-500 text-center mt-2">資料將儲存於雲端資料庫 (Firestore)。</p>
-                </form>
+                <!-- 🚨 登入/登出按鈕 -->
+                <button type="button" id="signInButton" class="w-full py-3 px-4 border border-transparent rounded-lg shadow-md text-base font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors duration-200 hidden mb-3">
+                    <svg class="inline-block w-5 h-5 mr-2 -mt-0.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+                        <path fill="#FFC107" d="M43.6 20.4H24v7.5h11.3c-.7 4.2-4 8-9.3 8-6 0-10.9-4.9-10.9-10.9S14.7 14.1 20.7 14.1c3.2 0 5.8 1.4 7.7 3.2l5.7-5.7C30.6 6.8 25.8 4 20.7 4 11.2 4 3.4 11.8 3.4 21.3s7.8 17.3 17.3 17.3c9.9 0 17.1-7.1 17.1-17.1 0-1.1-.1-2.2-.4-3.3z"></path>
+                        <path fill="#FF3D00" d="M6.3 18.5l6.3 4.9C14.7 20 17.5 18.5 20.7 18.5c3.2 0 5.8 1.4 7.7 3.2l5.7-5.7c-2-1.9-4.6-3.2-7.7-3.2C13.2 12.8 8.8 15.3 6.3 18.5z"></path>
+                        <path fill="#4CAF50" d="M20.7 41.6c-5.1 0-9.5-2.5-12.2-6.4l6.3-4.9c1.9 2.8 4.9 4.6 8.7 4.6 4.7 0 8.6-3.1 10-7.2h6.8c-1.3 5.3-6.2 9.2-13.6 9.2z"></path>
+                        <path fill="#1976D2" d="M43.6 20.4H24v7.5h11.3c-.7 4.2-4 8-9.3 8-3.8 0-7.2-1.8-9.4-4.6l-6.3 4.9c4 6.3 10.9 9.8 17.6 9.8 11.2 0 19.8-7.9 19.8-17.6 0-1.1-.1-2.2-.4-3.3z"></path>
+                    </svg>
+                    使用 Google 帳號登入
+                </button>
+                <button type="button" id="signOutButton" class="w-full py-3 px-4 border border-transparent rounded-lg shadow-md text-base font-medium text-white bg-gray-500 hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors duration-200 hidden mb-3">
+                    👋 登出 (目前身份: <span id="currentUserNameSpan">訪客</span>)
+                </button>
                 
-                <!-- AI 教練分析區 -->
+                <!-- 🚨 紀錄表單 (未登入時隱藏) -->
+                <div id="recordFormDiv" class="space-y-4 hidden">
+                    <form id="recordForm" class="space-y-4">
+                        <p class="text-sm text-gray-600 border-t pt-3">請輸入您的**學號/座號**，以利數據累積和計算。</p>
+                        
+                        <div>
+                            <label for="name" class="block text-sm font-medium text-gray-700">姓名</label>
+                            <input type="text" id="name" required class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="請輸入姓名">
+                        </div>
+                        
+                        <div>
+                            <label for="studentId" class="block text-sm font-medium text-gray-700">座號 / 編號</label>
+                            <input type="text" id="studentId" required class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="例如：01 / A01">
+                        </div>
+
+                        <div>
+                            <label for="date" class="block text-sm font-medium text-gray-700">日期</label>
+                            <input type="date" id="date" required class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-3 focus:border-indigo-500 focus:ring-indigo-500">
+                        </div>
+
+                        <div>
+                            <label for="laps" class="block text-sm font-medium text-gray-700">跑步圈數 (200 公尺/圈)</label>
+                            <input type="number" id="laps" required min="1" class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="請輸入完成圈數">
+                        </div>
+
+                        <button type="submit" id="submitButton" class="w-full py-3 px-4 border border-transparent rounded-lg shadow-md text-base font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-colors duration-200">
+                            提交紀錄
+                        </button>
+                        <p class="text-xs text-gray-500 text-center mt-2">資料將儲存於雲端資料庫 (Firestore)。</p>
+                    </form>
+                </div>
+                
+                <!-- AI 教練分析區 (保持不變) -->
                 <div class="mt-6 border-t pt-6">
                     <h2 class="text-xl font-bold text-purple-600 mb-3 flex items-center">
                         <span class="mr-2">🤖</span> AI 教練心得分析
@@ -943,7 +975,7 @@
                     </div>
                 </div>
 
-                <!-- 重置數據按鈕 -->
+                <!-- 重置數據按鈕 (保持不變) -->
                 <div class="mt-6 border-t pt-6">
                     <button type="button" id="resetDataButton" class="w-full py-3 px-4 border border-transparent rounded-lg shadow-md text-base font-medium text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors duration-200">
                         🗑️ 重置所有數據 (需管理者密碼)
@@ -952,7 +984,7 @@
                 </div>
             </div>
 
-            <!-- 2. 視覺化地圖區 (色塊地圖) -->
+            <!-- 2. 視覺化地圖區 (保持不變) -->
             <div class="lg:col-span-2 bg-white p-6 rounded-2xl shadow-xl">
                 <h2 class="text-2xl font-bold text-indigo-600 mb-4 border-b pb-2">環島進度視覺化 (矩形跑道)</h2>
                 
@@ -962,7 +994,6 @@
                     <div id="taiwan-map-grid" class="w-full max-w-2xl aspect-[5/5]">
                         <!-- 中央競賽主題插圖 (3x3 區塊) -->
                         <div id="central-illustration" class="grid-center-area flex flex-col items-center justify-center p-4">
-                            <!-- Trophy SVG (代表競賽與目標) -->
                             <svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-yellow-500 fill-yellow-200">
                                 <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"></path>
                                 <path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"></path>
@@ -990,7 +1021,7 @@
         
     </div>
 
-    <!-- 自訂訊息框 (取代 alert) -->
+    <!-- 自訂訊息框 (保持不變) -->
     <div id="messageBox" class="fixed bottom-5 right-5 p-4 border rounded-lg shadow-xl z-50 transition-transform duration-300 transform translate-x-full" role="alert">
         <div class="flex items-center">
             <span id="messageIcon" class="text-xl mr-2"></span>
@@ -999,7 +1030,7 @@
         </div>
     </div>
     
-    <!-- 自訂確認對話框 (現在包含密碼輸入) -->
+    <!-- 自訂確認對話框 (保持不變) -->
     <div id="confirmModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
         <div class="bg-white rounded-xl p-8 max-w-lg mx-4 shadow-2xl transform transition-all scale-100">
             <h3 id="confirmTitle" class="text-2xl font-bold text-red-600 mb-4 border-b pb-2"></h3>
