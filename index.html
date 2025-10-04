@@ -23,7 +23,6 @@
         // **********************************************
 
         // ==== IMPORTANT: START Firebase Config (FOR GH Pages / Static Hosting) ====
-        // 由於 Canvas 環境下可能無法使用 Custom Token/Anonymous，我們專門為 Google 登入提供 Firebase 設定
         // 注意：在您的實際環境中，您需要確保 Google 登入已在 Firebase Console 中啟用。
         const GH_PAGES_FIREBASE_CONFIG = {
             apiKey: "AIzaSyCuxRrZXNPrKWx9nrRiZyY_plxUkSISeFo",
@@ -42,8 +41,6 @@
             ? JSON.parse(__firebase_config) 
             : GH_PAGES_FIREBASE_CONFIG;
             
-        // 移除 initialAuthToken 的使用，改用 Google 登入
-        
         const appId = isCanvasEnvironment 
             ? (typeof __app_id !== 'undefined' ? __app_id : 'default-running-app') 
             : 'beta4-gh-pages-running-app'; 
@@ -160,6 +157,7 @@
                 signInButton.classList.add('hidden');
                 signOutButton.classList.remove('hidden');
                 recordFormDiv.classList.remove('hidden'); 
+                document.getElementById('currentUserNameSpan').textContent = currentUserName;
             } else if (authReady && !currentUserId) {
                 // 未登入/登出
                 statusElement.textContent = '🔒 請使用 Google 帳號登入以提交您的跑步紀錄。';
@@ -168,6 +166,7 @@
                 signInButton.classList.remove('hidden');
                 signOutButton.classList.add('hidden');
                 recordFormDiv.classList.add('hidden'); 
+                document.getElementById('currentUserNameSpan').textContent = '訪客';
             } else {
                 // 正在連線
                 statusElement.textContent = '⌛ 正在連線到資料庫...';
@@ -631,7 +630,6 @@
             updateMap(students);
         }
 
-        // ... (updateMap, getColorHash, getTextColor 保持不變)
         function updateMap(students) {
             CITIES_DATA.forEach(city => {
                 const container = document.getElementById(`marker-container-${city.id}`);
@@ -682,6 +680,7 @@
                 progressBar.style.height = ''; 
 
                 const progressPercent = `${progressInCity * 100}%`;
+                // 使用 studentId 產生獨特顏色
                 progressBar.style.backgroundColor = getColorHash(student.studentId);
                 
                 const barThickness = '4px';
@@ -713,15 +712,15 @@
                         break;
                 }
                 
-                // 2. 標記 (Marker)
-                const markerSizeHalf = 12; 
-                const markerPosition = `calc(${progressInCity * 100}% - ${markerSizeHalf}px)`; 
+                // 2. 標記 (Marker) - 改為動態寬度的藥丸狀
+                const markerPosition = `${progressInCity * 100}%`; 
                 
                 let marker = document.getElementById(`marker-${student.studentId}`);
                 if (!marker) {
                     marker = document.createElement('div');
                     marker.id = `marker-${student.studentId}`;
-                    marker.className = `student-marker absolute w-6 h-6 rounded-full shadow-lg border-2 border-white flex items-center justify-center font-bold text-xs transition-all duration-1000 ease-out z-30`;
+                    // ⭐️ 核心變更: 調整為動態寬度 (px-2) 和固定高度 (h-6) 的藥丸形狀，使用 text-xs 且不換行
+                    marker.className = `student-marker absolute px-2 h-6 rounded-full shadow-lg border-2 border-white flex items-center justify-center font-bold text-xs whitespace-nowrap transition-all duration-1000 ease-out z-30`; 
                     container.appendChild(marker); 
                 }
                 
@@ -736,30 +735,34 @@
                 marker.style.color = getTextColor(color);
                 marker.title = `${student.name} (${student.studentId})：總里程 ${(totalDistance / 1000).toFixed(2)} KM (已完成 ${fullLaps} 次環島)`;
                 
-                marker.textContent = student.studentId; 
+                // ⭐️ 核心變更：顯示完整名字
+                marker.textContent = student.name; 
                 
-                const markerOffset = '-2px';
-                
+                // Positioning: 使用 transform 進行水平/垂直置中及位移，使標記在進度條旁邊
                 switch (direction) {
                     case 'right': 
-                        marker.style.bottom = markerOffset;
-                        marker.style.left = markerPosition;
-                        marker.style.transform = 'translateX(-50%)'; 
+                        marker.style.bottom = '0'; 
+                        marker.style.left = markerPosition; 
+                        // 水平居中 (-50% 自身寬度) 並向上抬升 (負的自身高度 100% 加上 4px 間距)
+                        marker.style.transform = 'translateX(-50%) translateY(calc(-100% - 4px))'; 
                         break;
                     case 'left': 
-                        marker.style.bottom = markerOffset;
+                        marker.style.bottom = '0'; 
                         marker.style.right = markerPosition;
-                        marker.style.transform = 'translateX(50%)'; 
+                        // 水平居中 (50% 自身寬度向右) 並向上抬升
+                        marker.style.transform = 'translateX(50%) translateY(calc(-100% - 4px))';
                         break;
                     case 'up': 
-                        marker.style.left = markerOffset;
-                        marker.style.bottom = markerPosition;
-                        marker.style.transform = 'translateY(50%)'; 
+                        marker.style.left = '0'; 
+                        marker.style.bottom = markerPosition; 
+                        // 垂直居中 (50% 自身高度向上) 並向左推出 (-100% 自身寬度加上 4px 間距)
+                        marker.style.transform = 'translateY(50%) translateX(calc(-100% - 4px))'; 
                         break;
                     case 'down': 
-                        marker.style.right = markerOffset;
-                        marker.style.top = markerPosition;
-                        marker.style.transform = 'translateY(-50%)'; 
+                        marker.style.right = '0'; 
+                        marker.style.top = markerPosition; 
+                        // 垂直居中 (-50% 自身高度向下) 並向右推出 (100% 自身寬度加上 4px 間距)
+                        marker.style.transform = 'translateY(-50%) translateX(calc(100% + 4px))'; 
                         break;
                 }
                 
@@ -790,6 +793,9 @@
             return (brightness > 150) ? 'black' : 'white';
         }
 
+        /**
+         * 顯示浮動訊息框，並在 8 秒後自動隱藏。
+         */
         function showMessageBox(message, type = 'info') {
             const box = document.getElementById('messageBox');
             const content = document.getElementById('messageContent');
@@ -805,15 +811,27 @@
                 info: 'ℹ️'
             };
 
-            box.className = `fixed bottom-5 right-5 p-4 border rounded-lg shadow-xl z-50 transition-transform duration-300 transform translate-x-0 ${boxClasses[type]}`;
+            const baseClasses = 'fixed bottom-5 right-5 p-4 border rounded-lg shadow-xl z-50 transition-transform duration-300 transform';
+            
+            // 1. 重設並應用隱藏狀態和顏色
+            // 確保訊息框處於隱藏狀態 (translate-x-full)
+            box.className = `${baseClasses} translate-x-full ${boxClasses[type]}`;
+            
             icon.textContent = iconContent[type];
             content.textContent = message;
 
+            // 2. 強制瀏覽器重繪，確保從 hidden 狀態開始 transition
+            void box.offsetWidth; 
+
+            // 3. 顯示訊息框 (從右邊滑入)
+            box.classList.remove('translate-x-full');
+            box.classList.add('translate-x-0');
+
+            // 4. 8 秒後自動隱藏 (滑出右邊)
             setTimeout(() => {
+                box.classList.remove('translate-x-0');
                 box.classList.add('translate-x-full');
             }, 8000); 
-            
-            box.classList.remove('translate-x-full');
         }
         
         function showConfirmationModal(title, message, callback) {
@@ -868,14 +886,8 @@
         .city-block > span {
             text-shadow: 0 0 4px rgba(0, 0, 0, 0.4);
         }
-
-        .student-marker {
-            width: 24px;
-            height: 24px;
-            border: 3px solid white;
-        }
         
-        /* 中央競賽主題區塊 CSS */
+        /* 中央競賽主題區塊 CSS (保持不變) */
         .grid-center-area {
             grid-column: 2 / 5;
             grid-row: 2 / 5;   
@@ -1021,7 +1033,7 @@
         
     </div>
 
-    <!-- 自訂訊息框 (保持不變) -->
+    <!-- 自訂訊息框 (已修正自動消失邏輯) -->
     <div id="messageBox" class="fixed bottom-5 right-5 p-4 border rounded-lg shadow-xl z-50 transition-transform duration-300 transform translate-x-full" role="alert">
         <div class="flex items-center">
             <span id="messageIcon" class="text-xl mr-2"></span>
