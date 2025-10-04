@@ -8,7 +8,6 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        // 導入 getDocs 和 deleteDoc 以用於數據刪除
         import { getFirestore, collection, addDoc, query, onSnapshot, orderBy, serverTimestamp, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
@@ -110,9 +109,39 @@
             { id: 'tainan_end', name: '回到台南', progress: 1.0000 },
         ];
         
+        // ==== Local Storage Functions (New for Persistence) ====
+        
+        /**
+         * 儲存使用者的姓名和座號到瀏覽器本地儲存。
+         */
+        function saveIdentity(name, studentId) {
+            try {
+                localStorage.setItem('studentName', name);
+                localStorage.setItem('studentId', studentId);
+            } catch (e) {
+                console.warn("無法使用 localStorage 儲存身份。請檢查瀏覽器設定。", e);
+            }
+        }
+
+        /**
+         * 從瀏覽器本地儲存載入使用者的姓名和座號。
+         */
+        function loadIdentity() {
+            try {
+                const name = localStorage.getItem('studentName');
+                const studentId = localStorage.getItem('studentId');
+                
+                if (name) document.getElementById('name').value = name;
+                if (studentId) document.getElementById('studentId').value = studentId;
+            } catch (e) {
+                console.warn("無法從 localStorage 載入身份。", e);
+            }
+        }
+
         // ==== Firestore & Auth Functions ====
         
         const getCollectionRef = () => {
+            // 數據儲存在公共集合，確保所有人都可讀寫和整合
             return collection(db, `artifacts/${appId}/public/data/running_records`);
         };
 
@@ -136,7 +165,7 @@
         }
 
         /**
-         * 修正後的驗證初始化函式，加入了更詳細的錯誤處理。
+         * 驗證初始化函式，加入了更詳細的錯誤處理。
          */
         async function initAuthAndListener() {
             try {
@@ -147,7 +176,6 @@
                 
                 // 2. 如果尚未登入，則回退到匿名登入 (GitHub Pages 或一般部署環境)
                 if (!auth.currentUser) {
-                    // *** 如果 Anonymous Auth 未在 Firebase 後台啟用，這裡將會拋出錯誤！ ***
                     await signInAnonymously(auth); 
                 } 
                 
@@ -156,12 +184,12 @@
                 if (currentUserId) {
                     authReady = true;
                     updateAuthStatusUI();
+                    // 只有在驗證成功後才設定監聽器，確保數據可以載入
                     if (!listenerActive) {
                         setupRealtimeListener();
                         listenerActive = true;
                     }
                 } else {
-                    // 理論上不應該發生，除非登入成功但無法取得 UID
                     throw new Error("Authentication failed: Could not retrieve User ID after sign-in attempt.");
                 }
 
@@ -179,7 +207,7 @@
                 
                 authReady = true; 
                 currentUserId = null;
-                updateAuthStatusUI(); // 顯示錯誤狀態
+                updateAuthStatusUI(); 
             }
         }
         
@@ -258,13 +286,16 @@
             );
         }
 
-        // ==== DOMContentLoaded / Init (保持不變) ====
+        // ==== DOMContentLoaded / Init (包含新的 Identity 載入) ====
         document.addEventListener('DOMContentLoaded', () => {
             const form = document.getElementById('recordForm');
             const dateInput = document.getElementById('date');
             const today = new Date().toISOString().split('T')[0];
             dateInput.value = today;
             form.addEventListener('submit', handleFormSubmit);
+            
+            // NEW: 載入先前儲存的姓名和座號
+            loadIdentity(); 
             
             const resetButton = document.getElementById('resetDataButton');
             resetButton.addEventListener('click', resetDataHandler);
@@ -360,6 +391,9 @@
                 showMessageBox("請確保所有欄位都已正確填寫，且圈數大於 0。", "info");
                 return;
             }
+            
+            // NEW: 提交前保存身份
+            saveIdentity(name, studentId); 
             
             const distanceMeters = laps * LAPS_TO_METERS;
 
@@ -506,13 +540,16 @@
         }
         
         function setupRealtimeListener() {
+            // 查詢所有紀錄，並依照時間戳記倒序排列 (確保最新紀錄先顯示)
             const recordsQuery = query(getCollectionRef(), orderBy("timestamp", "desc"));
 
+            // onSnapshot 訂閱即時數據變化
             onSnapshot(recordsQuery, (snapshot) => {
                 const allRecords = [];
                 snapshot.forEach((doc) => {
                     allRecords.push(doc.data());
                 });
+                // 處理所有紀錄，計算總里程並更新 UI
                 processRecords(allRecords);
             }, (error) => {
                 console.error("Error listening to running records:", error);
@@ -526,6 +563,7 @@
             
             leaderboard.innerHTML = ''; 
             
+            // 核心邏輯：根據 studentId 累計總里程
             records.forEach(record => {
                 const key = record.studentId;
                 if (!studentTotals[key]) {
@@ -543,8 +581,10 @@
             studentTotalsData = studentTotals;
             
             let students = Object.values(studentTotals);
+            // 排序：總里程由高到低
             students.sort((a, b) => b.totalDistanceM - a.totalDistanceM);
 
+            // 更新排行榜 UI
             students.forEach((student, index) => {
                 const totalKm = (student.totalDistanceM / 1000).toFixed(2);
                 const li = document.createElement('li');
@@ -559,6 +599,7 @@
                 leaderboard.appendChild(li);
             });
             
+            // 更新地圖視覺化
             updateMap(students);
         }
 
