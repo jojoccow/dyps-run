@@ -109,7 +109,7 @@
             { id: 'tainan_end', name: '回到台南', progress: 1.0000 },
         ];
         
-        // ==== Local Storage Functions (New for Persistence) ====
+        // ==== Local Storage Functions (Input Persistence) ====
         
         /**
          * 儲存使用者的姓名和座號到瀏覽器本地儲存。
@@ -131,8 +131,12 @@
                 const name = localStorage.getItem('studentName');
                 const studentId = localStorage.getItem('studentId');
                 
-                if (name) document.getElementById('name').value = name;
-                if (studentId) document.getElementById('studentId').value = studentId;
+                // 只有當元素存在時才設置值，避免錯誤
+                const nameInput = document.getElementById('name');
+                const studentIdInput = document.getElementById('studentId');
+
+                if (name && nameInput) nameInput.value = name;
+                if (studentId && studentIdInput) studentIdInput.value = studentId;
             } catch (e) {
                 console.warn("無法從 localStorage 載入身份。", e);
             }
@@ -280,7 +284,7 @@
             dateInput.value = today;
             form.addEventListener('submit', handleFormSubmit);
             
-            // NEW: 載入先前儲存的姓名和座號
+            // 關鍵修正點：立即從本地儲存載入先前儲存的姓名和座號
             loadIdentity(); 
             
             const resetButton = document.getElementById('resetDataButton');
@@ -378,7 +382,7 @@
                 return;
             }
             
-            // NEW: 提交前保存身份
+            // 儲存身份：確保重新整理後姓名/座號會自動填入
             saveIdentity(name, studentId); 
             
             const distanceMeters = laps * LAPS_TO_METERS;
