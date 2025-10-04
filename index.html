@@ -398,6 +398,7 @@
             };
 
             const submitButton = document.getElementById('submitButton');
+            // 關鍵：鎖定按鈕並改變文字
             submitButton.disabled = true;
             submitButton.textContent = '儲存中...';
 
@@ -411,6 +412,7 @@
                 console.error("Error adding document: ", error);
                 showMessageBox(`儲存紀錄失敗 (錯誤: ${error.code || error.message})`, "error");
             } finally {
+                // 核心修正：無論成功或失敗，都在 finally 確保按鈕被重置
                 submitButton.disabled = false;
                 submitButton.textContent = '提交紀錄';
             }
