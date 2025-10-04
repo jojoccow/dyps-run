@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>學生環島跑步紀錄視覺化 (Google 登入)</title>
+    <title>東陽國小學生環島跑步戰績表</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
@@ -311,14 +311,14 @@
                 e.preventDefault();
                 // 在這裡我們仍然使用儲存在 localStorage 的姓名/座號來提取紀錄，但需要檢查是否已登入
                 if (!currentUserId) {
-                     showMessageBox("請先登入才能取得個人化 AI 心得。", "info");
+                     showMessageBox("請先登入才能取得個人化AI建議。", "info");
                      return;
                 }
                 const name = document.getElementById('name').value.trim();
                 const studentId = document.getElementById('studentId').value.trim();
                 
                 if (!name || !studentId) {
-                    showMessageBox("請先輸入姓名和座號，才能取得個人化 AI 心得。", "info");
+                    showMessageBox("請先輸入姓名和座號，才能取得個人化AI建議。", "info");
                     return;
                 }
                 
@@ -491,7 +491,7 @@
             }
 
             generateButton.disabled = true;
-            generateButton.innerHTML = '✨ 正在產生心得...';
+            generateButton.innerHTML = '✨ 正在產生建議...';
             reflectionBox.innerHTML = '<p class="text-gray-500 animate-pulse">正在與 AI 教練連線，請稍候...</p>';
             
             const totalDistance = student.totalDistanceM;
@@ -565,7 +565,7 @@
             }
 
             generateButton.disabled = false;
-            generateButton.innerHTML = '✨ 取得 AI 跑步心得';
+            generateButton.innerHTML = '✨ 取得 AI 教練建議';
         }
         
         /**
@@ -923,8 +923,8 @@
 
     <div class="container mx-auto p-4 lg:p-8">
         <header class="text-center mb-8">
-            <h1 class="text-4xl font-extrabold text-indigo-700 mb-2">🏃‍♂️ 學生環島跑步里程儀 (Google 登入版) 🇹🇼</h1>
-            <p class="text-xl text-gray-600">跑步進度視覺化：沿著矩形環狀跑道順時針繞行！</p>
+            <h1 class="text-4xl font-extrabold text-indigo-700 mb-2">🏃‍♂️ 六甲學生環島跑步里程儀 🇹🇼</h1>
+            <p class="text-xl text-gray-600">跑步進度：沿著矩形環狀跑道順時針繞行！</p>
             <p class="text-sm text-gray-500 mt-1">虛擬環島跑道一圈為 <span class="font-bold text-red-500">50,000 公尺 (50 公里)</span>。</p>
         </header>
 
@@ -955,7 +955,7 @@
                 <!-- 🚨 紀錄表單 (未登入時隱藏) -->
                 <div id="recordFormDiv" class="space-y-4 hidden">
                     <form id="recordForm" class="space-y-4">
-                        <p class="text-sm text-gray-600 border-t pt-3">請輸入您的**學號/座號**，以利數據累積和計算。</p>
+                        <p class="text-sm text-gray-600 border-t pt-3">請輸入您的**座號**，以利數據累積和計算。</p>
                         
                         <div>
                             <label for="name" class="block text-sm font-medium text-gray-700">姓名</label>
@@ -987,12 +987,12 @@
                 <!-- AI 教練分析區 (保持不變) -->
                 <div class="mt-6 border-t pt-6">
                     <h2 class="text-xl font-bold text-purple-600 mb-3 flex items-center">
-                        <span class="mr-2">🤖</span> AI 教練心得分析
+                        <span class="mr-2">🤖</span> AI 教練分析
                     </h2>
                     <p class="text-sm text-gray-600 mb-4">根據您輸入的座號，AI 教練將分析您的累積里程並提供激勵性回饋！</p>
                     
                     <button type="button" id="generateReflectionButton" class="w-full py-3 px-4 border border-transparent rounded-lg shadow-md text-base font-medium text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 transition-colors duration-200">
-                        ✨ 取得 AI 跑步心得
+                        ✨ 取得 AI 教練建議
                     </button>
 
                     <div id="aiReflectionContent" class="mt-4 p-4 bg-purple-50 rounded-lg min-h-[50px] flex items-center justify-center">
@@ -1011,7 +1011,7 @@
 
             <!-- 2. 視覺化地圖區 (保持不變) -->
             <div class="lg:col-span-2 bg-white p-6 rounded-2xl shadow-xl">
-                <h2 class="text-2xl font-bold text-indigo-600 mb-4 border-b pb-2">環島進度視覺化 (矩形跑道)</h2>
+                <h2 class="text-2xl font-bold text-indigo-600 mb-4 border-b pb-2">目前環島進度</h2>
                 
                 <div class="flex flex-col gap-6 justify-center items-center">
                     
@@ -1079,6 +1079,7 @@
     </div>
 </body>
 </html>
+
 
 
 
