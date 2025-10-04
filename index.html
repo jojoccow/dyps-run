@@ -8,7 +8,8 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, query, onSnapshot, orderBy, serverTimestamp, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        // 移除 orderBy 的引用，因為現在排序在客戶端完成
+        import { getFirestore, collection, addDoc, query, onSnapshot, serverTimestamp, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
         // 設置 Firebase/Firestore 的日誌級別，方便調試
@@ -211,7 +212,7 @@
             } catch (error) {
                 console.error("Firebase Sign-in Attempt Failed:", error);
                 // 登入失敗的 UI 會在 onAuthStateChanged 處理 (user = null)
-                showMessageBox(`❌ Firebase 驗證失敗: ${error.code || error.message}. 請檢查後台設定!`, "error");
+                showMessageBox(`❌ Firebase 驗證失敗: ${error.code || error.message}. 請檢查後台設定。`, "error");
             }
         }
         
@@ -316,8 +317,6 @@
             updateAuthStatusUI();
             initAuthAndListener(); // 啟動監聽和登入流程
         });
-
-        // 移除 waitForAuth 函式，因為我們現在使用 onAuthStateChanged
         
         /**
          * 動態生成縣市色塊地圖 (保持不變)
@@ -529,9 +528,14 @@
             generateButton.innerHTML = '✨ 取得 AI 跑步心得';
         }
         
+        /**
+         * 啟動即時監聽器，從 Firestore 獲取所有數據。
+         * 修正：移除 orderBy() 以避免索引問題，確保數據順利載入。
+         */
         function setupRealtimeListener() {
-            // 查詢所有紀錄，並依照時間戳記倒序排列 (確保最新紀錄先顯示)
-            const recordsQuery = query(getCollectionRef(), orderBy("timestamp", "desc"));
+            // 由於 Canvas 環境下 Firestore 索引可能未建立，我們移除 orderBy()，
+            // 這樣可以確保數據能夠被完整獲取，排序邏輯移至客戶端 (processRecords)。
+            const recordsQuery = query(getCollectionRef()); 
             const leaderboard = document.getElementById('leaderboard');
             leaderboard.innerHTML = '<li class="p-3 text-gray-500 text-center animate-pulse">🏃 正在從雲端載入數據...</li>';
 
@@ -545,6 +549,7 @@
                 processRecords(allRecords);
             }, (error) => {
                 console.error("Error listening to running records:", error);
+                // 增加提示，可能是權限或連線問題
                 showMessageBox("無法連接到資料庫或權限不足。無法顯示排行榜。", "error");
             });
         }
@@ -581,7 +586,7 @@
                  return;
             }
             
-            // 排序：總里程由高到低
+            // 在客戶端進行排序：總里程由高到低
             students.sort((a, b) => b.totalDistanceM - a.totalDistanceM);
 
             // 更新排行榜 UI
