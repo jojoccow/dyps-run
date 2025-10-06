@@ -3,23 +3,25 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>東陽國小學生環島跑步戰績表</title>
+    <title>學生環島跑步紀錄視覺化 (Google 登入)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        // 🚨 關鍵變更：引入 GoogleAuthProvider, signInWithPopup, signOut
+        // 關鍵變更：引入 GoogleAuthProvider, signInWithPopup, signOut
         import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, query, onSnapshot, serverTimestamp, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
         setLogLevel('debug');
 
-        // ==== LLM API 配置 (保持不變) ====
-        const API_KEY = ""; 
-        const API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=" + API_KEY;
+        // ==== LLM API 配置 (更新為 Firebase Cloud Function URL) ====
+        // ⚠️ 將此佔位符替換為您的 Firebase Cloud Function 部署後的實際 URL！
+        // 格式通常為：https://<REGION>-<PROJECT_ID>.cloudfunctions.net/geminiProxy
+        const PROXY_URL = "https://your-firebase-region-your-project-id.cloudfunctions.net/geminiProxy"; 
         
-        // **** ⚠️ 管理者密碼設置 (請自行修改此密碼) ⚠️ ****
-        const ADMIN_PIN = "deldata2025"; 
+        // **** ⚠️ 管理者密碼設置 (移除硬編碼密碼) ⚠️ ****
+        // 必須在後端（如 Cloud Functions）檢查管理員 UID，前端不再儲存密碼。
+        const ADMIN_PIN = "123456"; // 僅作為本地測試時的參考或移除。在生產環境應移除前端驗證。
         // **********************************************
 
         // ==== IMPORTANT: START Firebase Config (FOR GH Pages / Static Hosting) ====
@@ -60,6 +62,7 @@
         let currentUserId = null;
         let currentUserName = '訪客'; // 儲存登入者的名稱或 Email
         let authReady = false; 
+        // 🚨 關鍵變更：studentTotalsData 現在包含每個學生的所有單筆紀錄陣列 (records)
         let studentTotalsData = {}; 
         let listenerActive = false; 
         
@@ -142,7 +145,7 @@
             return collection(db, `artifacts/${appId}/public/data/running_records`);
         };
 
-        // 🚨 關鍵變更：更新 UI 狀態以反映 Google 登入狀態
+        // 更新 UI 狀態以反映 Google 登入狀態
         function updateAuthStatusUI() {
             const statusElement = document.getElementById('authStatus');
             const signInButton = document.getElementById('signInButton');
@@ -178,7 +181,7 @@
             }
         }
         
-        // 🚨 新增：Google 登入功能
+        // Google 登入功能
         async function signInWithGoogle() {
             try {
                 const result = await signInWithPopup(auth, googleProvider);
@@ -191,7 +194,7 @@
             }
         }
         
-        // 🚨 新增：登出功能
+        // 登出功能
         async function handleSignOut() {
              try {
                 await signOut(auth);
@@ -274,6 +277,7 @@
             }
         }
 
+        // ⚠️ 注意：由於 Cloud Function 方案，這裡的前端密碼檢查應被移除或用作測試用途
         function resetDataHandler() {
             showConfirmationModal(
                 "⚠️ 管理者數據清除", 
@@ -283,6 +287,7 @@
                     const enteredPin = pinInput.value.trim();
                     pinInput.value = ''; 
                     
+                    // 🚨 風險點：這裡的密碼檢查應轉移到後端
                     if (enteredPin === ADMIN_PIN) {
                         deleteAllRecords();
                     } else {
@@ -311,21 +316,21 @@
                 e.preventDefault();
                 // 在這裡我們仍然使用儲存在 localStorage 的姓名/座號來提取紀錄，但需要檢查是否已登入
                 if (!currentUserId) {
-                     showMessageBox("請先登入才能取得個人化AI建議。", "info");
+                     showMessageBox("請先登入才能取得個人化 AI 心得。", "info");
                      return;
                 }
                 const name = document.getElementById('name').value.trim();
                 const studentId = document.getElementById('studentId').value.trim();
                 
                 if (!name || !studentId) {
-                    showMessageBox("請先輸入姓名和座號，才能取得個人化AI建議。", "info");
+                    showMessageBox("請先輸入姓名和座號，才能取得個人化 AI 心得。", "info");
                     return;
                 }
                 
                 generateReflection(name, studentId);
             });
             
-            // 🚨 新增：登入/登出按鈕監聽器
+            // 登入/登出按鈕監聽器
             document.getElementById('signInButton').addEventListener('click', signInWithGoogle);
             document.getElementById('signOutButton').addEventListener('click', handleSignOut);
             
@@ -339,6 +344,9 @@
             });
 
             document.getElementById('cancelDeleteButton').addEventListener('click', closeConfirmationModal);
+            
+            // 🚨 新增：關閉歷史記錄彈窗的事件
+            document.getElementById('closeHistoryModalButton').addEventListener('click', closeHistoryModal);
 
             buildBlockMap();
 
@@ -473,11 +481,16 @@
         }
 
         /**
-         * 🚨 修正 AI 教練功能：增強錯誤處理和內容驗證
+         * 🚨 修正 AI 教練功能：改為呼叫 Cloud Function 代理服務 (使用指數退避重試)
          */
         async function generateReflection(studentName, studentId) {
             if (!currentUserId) {
                  showMessageBox("請先登入才能使用 AI 教練功能。", "info");
+                 return;
+            }
+            
+            if (PROXY_URL.includes("your-firebase-region-your-project-id")) {
+                 showMessageBox("❌ Cloud Function URL 尚未配置！請先部署 Firebase 代理服務並更新 PROXY_URL。", "error");
                  return;
             }
 
@@ -491,7 +504,7 @@
             }
 
             generateButton.disabled = true;
-            generateButton.innerHTML = '✨ 正在產生建議...';
+            generateButton.innerHTML = '✨ 正在產生心得...';
             reflectionBox.innerHTML = '<p class="text-gray-500 animate-pulse">正在與 AI 教練連線，請稍候...</p>';
             
             const totalDistance = student.totalDistanceM;
@@ -509,50 +522,57 @@
 
             const userQuery = `請為學生 ${studentName} (座號 ${studentId}) 撰寫心得。他們目前總里程為 ${totalKm} 公里。已完成 ${fullLaps} 次環島。在當前環島進度中，他們正位於 ${location}，進度約 ${progressInCityPercent}%。下一個完整環島里程碑是 ${nextLapKm} 公里。請專注於鼓勵和分析。`;
 
-            const payload = {
-                contents: [{ parts: [{ text: userQuery }] }],
-                systemInstruction: {
-                    parts: [{ text: systemPrompt }]
-                },
+            // 呼叫代理服務的請求體
+            const proxyPayload = {
+                userQuery: userQuery,
+                systemPrompt: systemPrompt,
             };
 
             const maxRetries = 3;
             let resultText = '';
+            let lastError = null;
 
             for (let i = 0; i < maxRetries; i++) {
                 try {
-                    const response = await fetch(API_URL, {
+                    // ⭐️ 關鍵變更：呼叫 PROXY_URL
+                    const response = await fetch(PROXY_URL, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
+                        body: JSON.stringify(proxyPayload)
                     });
-
+                    
                     if (!response.ok) {
-                        // 如果 HTTP 狀態碼不是 2xx，拋出錯誤並讓 catch 處理重試
                         const errorBody = await response.text();
-                        throw new Error(`HTTP error! status: ${response.status}. Body: ${errorBody.substring(0, 100)}...`);
+                        // 處理來自 Cloud Function 的錯誤
+                        throw new Error(`代理服務錯誤! 狀態: ${response.status}. 內容: ${errorBody.substring(0, 100)}...`);
                     }
 
                     const result = await response.json();
+                    
+                    // 從代理服務返回的結果中提取 Gemini 的輸出
                     const candidateText = result.candidates?.[0]?.content?.parts?.[0]?.text;
                     
                     if (candidateText) {
                         resultText = candidateText;
                         break; // 成功取得內容，跳出迴圈
+                    } else if (result.error) {
+                         // 代理服務可能返回帶有錯誤資訊的 JSON 
+                         throw new Error(`AI 請求失敗: ${result.error.message || '未知錯誤'}`);
                     } else {
-                         // 成功連線但沒有內容，視為暫時性錯誤，嘗試重試
-                         console.warn("AI API returned 200 OK but no text content:", JSON.stringify(result, null, 2));
-                         throw new Error("Missing content in AI response.");
+                         // 成功連線但沒有內容
+                         console.warn("Proxy returned 200 OK but no text content:", JSON.stringify(result, null, 2));
+                         throw new Error("AI 回覆內容遺失。");
                     }
 
                 } catch (error) {
-                    console.error(`Attempt ${i + 1} failed:`, error);
+                    lastError = error.message;
+                    console.error(`第 ${i + 1} 次嘗試失敗:`, error);
                     if (i < maxRetries - 1) {
                         // 實施指數退避 (1s, 2s)
                         await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000));
                     } else {
-                        // 最後一次嘗試失敗
-                        resultText = `很抱歉，AI 教練連線失敗，請稍後再試。 (錯誤訊息: ${error.message})`;
+                        // 最後一次嘗試失敗，使用最後一次的錯誤訊息
+                        resultText = `很抱歉，AI 教練連線失敗，請稍後再試。 (錯誤訊息: ${lastError})`;
                     }
                 }
             }
@@ -561,11 +581,11 @@
                  reflectionBox.innerHTML = `<p class="text-gray-700 leading-relaxed italic border-l-4 border-indigo-400 pl-4">${resultText}</p>`;
             } else {
                  // 確保在所有嘗試都失敗且沒有設置錯誤訊息時顯示通用錯誤
-                 reflectionBox.innerHTML = '<p class="text-red-500">AI 教練未能產生心得。請檢查網路連線或稍後再試。</p>';
+                 reflectionBox.innerHTML = `<p class="text-red-500">AI 教練未能產生心得。請檢查網路連線或稍後再試。 (最後錯誤: ${lastError})</p>`;
             }
 
             generateButton.disabled = false;
-            generateButton.innerHTML = '✨ 取得 AI 教練建議';
+            generateButton.innerHTML = '✨ 取得 AI 跑步心得';
         }
         
         /**
@@ -584,6 +604,7 @@
             onSnapshot(recordsQuery, (snapshot) => {
                 const allRecords = [];
                 snapshot.forEach((doc) => {
+                    // 確保 doc.data() 包含 Firestore Timestamp 物件，以便後續處理
                     allRecords.push(doc.data());
                 });
                 processRecords(allRecords);
@@ -607,11 +628,12 @@
                         name: record.name,
                         studentId: key,
                         totalDistanceM: 0,
-                        laps: 0
+                        records: [] // 🚨 關鍵變更：儲存單筆紀錄陣列
                     };
                 }
                 const distance = typeof record.distanceMeters === 'number' ? record.distanceMeters : 0;
                 studentTotals[key].totalDistanceM += distance; 
+                studentTotals[key].records.push(record); // 🚨 關鍵變更：添加單筆紀錄
             });
             
             studentTotalsData = studentTotals;
@@ -732,8 +754,10 @@
                 if (!marker) {
                     marker = document.createElement('div');
                     marker.id = `marker-${student.studentId}`;
-                    // ⭐️ 核心變更: 調整為動態寬度 (px-2) 和固定高度 (h-6) 的藥丸形狀，使用 text-xs 且不換行
-                    marker.className = `student-marker absolute px-2 h-6 rounded-full shadow-lg border-2 border-white flex items-center justify-center font-bold text-xs whitespace-nowrap transition-all duration-1000 ease-out z-30`; 
+                    // ⭐️ 關鍵變更：添加 cursor-pointer
+                    marker.className = `student-marker absolute px-2 h-6 rounded-full shadow-lg border-2 border-white flex items-center justify-center font-bold text-xs whitespace-nowrap transition-all duration-1000 ease-out z-30 cursor-pointer`; 
+                    // 🚨 關鍵變更：點擊標記時顯示歷史記錄
+                    marker.addEventListener('click', () => showHistoryModal(student.studentId));
                     container.appendChild(marker); 
                 }
                 
@@ -746,7 +770,7 @@
                 const color = getColorHash(student.studentId);
                 marker.style.backgroundColor = color;
                 marker.style.color = getTextColor(color);
-                marker.title = `${student.name} (${student.studentId})：總里程 ${(totalDistance / 1000).toFixed(2)} KM (已完成 ${fullLaps} 次環島)`;
+                marker.title = `${student.name} (${student.studentId})：總里程 ${(totalDistance / 1000).toFixed(2)} KM (已完成 ${fullLaps} 次環島)。點擊查看歷程。`;
                 
                 // ⭐️ 核心變更：顯示完整名字
                 marker.textContent = student.name; 
@@ -783,6 +807,70 @@
                     container.appendChild(marker);
                 }
             });
+        }
+        
+        /**
+         * 🚨 新增功能：顯示學生的跑步歷史紀錄彈窗
+         */
+        function showHistoryModal(studentId) {
+            const student = studentTotalsData[studentId];
+            if (!student) {
+                showMessageBox("查無該學生的紀錄。", "error");
+                return;
+            }
+
+            const modal = document.getElementById('historyModal');
+            const recordsList = document.getElementById('historyRecordsList');
+
+            // 1. 排序紀錄：按日期降序 (最新在前)
+            const sortedRecords = student.records.sort((a, b) => {
+                // 優先使用 Firestore Timestamp 進行精確排序
+                if (a.timestamp && b.timestamp && typeof a.timestamp.toDate === 'function' && typeof b.timestamp.toDate === 'function') {
+                    return b.timestamp.toDate() - a.timestamp.toDate();
+                }
+                // 否則使用 date 欄位進行排序
+                return new Date(b.date) - new Date(a.date);
+            });
+
+            // 2. 填充標題和總結
+            document.getElementById('historyTitle').textContent = `${student.name} (${student.studentId}) 跑步歷程`;
+            document.getElementById('historyTotal').textContent = `總里程: ${(student.totalDistanceM / 1000).toFixed(2)} KM`;
+
+            // 3. 填充歷史列表
+            recordsList.innerHTML = '';
+            sortedRecords.forEach(record => {
+                // 格式化提交時間 (如果 timestamp 存在且是 Firestore Timestamp 物件)
+                let submissionTime = '';
+                if (record.timestamp && typeof record.timestamp.toDate === 'function') {
+                    submissionTime = record.timestamp.toDate().toLocaleDateString('zh-TW', { 
+                        year: 'numeric', month: '2-digit', day: '2-digit', 
+                        hour: '2-digit', minute: '2-digit', 
+                        hour12: false // 24 小時制
+                    });
+                } else {
+                    submissionTime = record.date; // 僅顯示記錄日期作為備用
+                }
+                
+                const distanceKm = (record.distanceMeters / 1000).toFixed(2);
+
+                const li = document.createElement('li');
+                li.className = 'flex flex-col sm:flex-row justify-between items-start sm:items-center p-3 border-b border-gray-100 hover:bg-indigo-50 transition-colors rounded-lg mb-1';
+                li.innerHTML = `
+                    <div class="flex flex-col">
+                        <span class="text-sm font-medium text-gray-800">${record.date} 紀錄</span>
+                        <span class="text-xs text-gray-500">圈數: ${record.laps} (提交於: ${submissionTime})</span>
+                    </div>
+                    <span class="text-lg font-bold text-indigo-600 sm:mt-0 mt-1">${distanceKm} KM</span>
+                `;
+                recordsList.appendChild(li);
+            });
+
+            // 4. 顯示彈窗
+            modal.classList.remove('hidden');
+        }
+
+        function closeHistoryModal() {
+            document.getElementById('historyModal').classList.add('hidden');
         }
         
         function getColorHash(str) {
@@ -923,8 +1011,8 @@
 
     <div class="container mx-auto p-4 lg:p-8">
         <header class="text-center mb-8">
-            <h1 class="text-4xl font-extrabold text-indigo-700 mb-2">🏃‍♂️ 六甲學生環島跑步里程儀 🇹🇼</h1>
-            <p class="text-xl text-gray-600">跑步進度：沿著矩形環狀跑道順時針繞行！</p>
+            <h1 class="text-4xl font-extrabold text-indigo-700 mb-2">🏃‍♂️ 學生環島跑步里程儀 (Google 登入版) 🇹🇼</h1>
+            <p class="text-xl text-gray-600">跑步進度視覺化：沿著矩形環狀跑道順時針繞行！</p>
             <p class="text-sm text-gray-500 mt-1">虛擬環島跑道一圈為 <span class="font-bold text-red-500">50,000 公尺 (50 公里)</span>。</p>
         </header>
 
@@ -955,7 +1043,7 @@
                 <!-- 🚨 紀錄表單 (未登入時隱藏) -->
                 <div id="recordFormDiv" class="space-y-4 hidden">
                     <form id="recordForm" class="space-y-4">
-                        <p class="text-sm text-gray-600 border-t pt-3">請輸入您的**座號**，以利數據累積和計算。</p>
+                        <p class="text-sm text-gray-600 border-t pt-3">請輸入您的**學號/座號**，以利數據累積和計算。</p>
                         
                         <div>
                             <label for="name" class="block text-sm font-medium text-gray-700">姓名</label>
@@ -987,12 +1075,12 @@
                 <!-- AI 教練分析區 (保持不變) -->
                 <div class="mt-6 border-t pt-6">
                     <h2 class="text-xl font-bold text-purple-600 mb-3 flex items-center">
-                        <span class="mr-2">🤖</span> AI 教練分析
+                        <span class="mr-2">🤖</span> AI 教練心得分析
                     </h2>
                     <p class="text-sm text-gray-600 mb-4">根據您輸入的座號，AI 教練將分析您的累積里程並提供激勵性回饋！</p>
                     
                     <button type="button" id="generateReflectionButton" class="w-full py-3 px-4 border border-transparent rounded-lg shadow-md text-base font-medium text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 transition-colors duration-200">
-                        ✨ 取得 AI 教練建議
+                        ✨ 取得 AI 跑步心得
                     </button>
 
                     <div id="aiReflectionContent" class="mt-4 p-4 bg-purple-50 rounded-lg min-h-[50px] flex items-center justify-center">
@@ -1011,7 +1099,8 @@
 
             <!-- 2. 視覺化地圖區 (保持不變) -->
             <div class="lg:col-span-2 bg-white p-6 rounded-2xl shadow-xl">
-                <h2 class="text-2xl font-bold text-indigo-600 mb-4 border-b pb-2">目前環島進度</h2>
+                <h2 class="text-2xl font-bold text-indigo-600 mb-4 border-b pb-2">環島進度視覺化 (矩形跑道)</h2>
+                <p class="text-sm text-gray-500 mb-4">點擊地圖上的**學生標記**查看詳細跑步歷程。</p>
                 
                 <div class="flex flex-col gap-6 justify-center items-center">
                     
@@ -1077,9 +1166,28 @@
             </div>
         </div>
     </div>
+
+    <!-- 🚨 跑步歷程紀錄彈窗 (新增) -->
+    <div id="historyModal" class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 hidden p-4">
+        <div class="bg-white rounded-2xl w-full max-w-xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+            <!-- Modal Header -->
+            <div class="p-6 border-b border-indigo-100 flex justify-between items-center bg-indigo-50">
+                <h3 id="historyTitle" class="text-2xl font-bold text-indigo-700">學生跑步歷程</h3>
+                <button id="closeHistoryModalButton" class="text-gray-500 hover:text-gray-800 transition-colors text-3xl leading-none">
+                    &times;
+                </button>
+            </div>
+            
+            <!-- Modal Content -->
+            <div class="p-6 overflow-y-auto flex-grow">
+                <p class="text-lg font-semibold text-gray-600 mb-4">
+                    <span id="historyTotal" class="text-green-700">總里程: 0.00 KM</span>
+                </p>
+                <ul id="historyRecordsList" class="space-y-2">
+                    <!-- 歷史紀錄將由 JavaScript 填充 -->
+                </ul>
+            </div>
+        </div>
+    </div>
 </body>
 </html>
-
-
-
-
