@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>學生環島跑步紀錄視覺化 (Google 登入)</title>
+    <title>東陽國小學生環島跑步紀錄里程排名</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
@@ -1019,8 +1019,8 @@
 
     <div class="container mx-auto p-4 lg:p-8">
         <header class="text-center mb-8">
-            <h1 class="text-4xl font-extrabold text-indigo-700 mb-2">🏃‍♂️ 學生環島跑步里程儀 (Google 登入版) 🇹🇼</h1>
-            <p class="text-xl text-gray-600">跑步進度視覺化：沿著矩形環狀跑道順時針繞行！</p>
+            <h1 class="text-4xl font-extrabold text-indigo-700 mb-2">🏃‍♂️ 東陽國小學生環島跑步里程儀 🇹🇼</h1>
+            <p class="text-xl text-gray-600">由臺南出發，沿著矩形環狀跑道順時針繞行！</p>
             <p class="text-sm text-gray-500 mt-1">虛擬環島跑道一圈為 <span class="font-bold text-red-500">50,000 公尺 (50 公里)</span>。</p>
         </header>
 
@@ -1051,7 +1051,7 @@
                 <!-- 🚨 紀錄表單 (未登入時隱藏) -->
                 <div id="recordFormDiv" class="space-y-4 hidden">
                     <form id="recordForm" class="space-y-4">
-                        <p class="text-sm text-gray-600 border-t pt-3">請輸入您的**學號/座號**，以利數據累積和計算。</p>
+                        <p class="text-sm text-gray-600 border-t pt-3">請輸入您的**座號**，以利數據累積和計算。</p>
                         
                         <div>
                             <label for="name" class="block text-sm font-medium text-gray-700">姓名</label>
@@ -1059,7 +1059,7 @@
                         </div>
                         
                         <div>
-                            <label for="studentId" class="block text-sm font-medium text-gray-700">座號 / 編號</label>
+                            <label for="studentId" class="block text-sm font-medium text-gray-700">座號</label>
                             <input type="text" id="studentId" required class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="例如：01 / A01">
                         </div>
 
@@ -1083,12 +1083,12 @@
                 <!-- AI 教練分析區 (保持不變) -->
                 <div class="mt-6 border-t pt-6">
                     <h2 class="text-xl font-bold text-purple-600 mb-3 flex items-center">
-                        <span class="mr-2">🤖</span> AI 教練心得分析
+                        <span class="mr-2">🤖</span> AI 教練分析
                     </h2>
                     <p class="text-sm text-gray-600 mb-4">根據您輸入的座號，AI 教練將分析您的累積里程並提供激勵性回饋！</p>
                     
                     <button type="button" id="generateReflectionButton" class="w-full py-3 px-4 border border-transparent rounded-lg shadow-md text-base font-medium text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 transition-colors duration-200">
-                        ✨ 取得 AI 跑步心得
+                        ✨ 取得 AI 教練建議
                     </button>
 
                     <div id="aiReflectionContent" class="mt-4 p-4 bg-purple-50 rounded-lg min-h-[50px] flex items-center justify-center">
@@ -1107,7 +1107,7 @@
 
             <!-- 2. 視覺化地圖區 (保持不變) -->
             <div class="lg:col-span-2 bg-white p-6 rounded-2xl shadow-xl">
-                <h2 class="text-2xl font-bold text-indigo-600 mb-4 border-b pb-2">環島進度視覺化 (矩形跑道)</h2>
+                <h2 class="text-2xl font-bold text-indigo-600 mb-4 border-b pb-2">環島跑步進度表</h2>
                 <p class="text-sm text-gray-500 mb-4">點擊地圖上的**學生標記**或**排行榜名單**查看詳細跑步歷程。</p>
                 
                 <div class="flex flex-col gap-6 justify-center items-center">
@@ -1199,3 +1199,4 @@
     </div>
 </body>
 </html>
+
