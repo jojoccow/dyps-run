@@ -651,7 +651,8 @@
             students.forEach((student, index) => {
                 const totalKm = (student.totalDistanceM / 1000).toFixed(2);
                 const li = document.createElement('li');
-                li.className = 'p-3 bg-white/70 backdrop-blur-sm rounded-xl flex justify-between items-center shadow-md mb-2 transition-all duration-300 hover:shadow-lg';
+                // 🚨 修正點：為排行榜項目添加 cursor-pointer 和 click 監聽器
+                li.className = 'p-3 bg-white/70 backdrop-blur-sm rounded-xl flex justify-between items-center shadow-md mb-2 transition-all duration-300 hover:shadow-lg cursor-pointer';
                 li.innerHTML = `
                     <div class="flex items-center space-x-3">
                         <span class="font-bold text-lg w-6 text-center text-indigo-600">${index + 1}</span>
@@ -659,6 +660,8 @@
                     </div>
                     <span class="font-mono text-xl text-green-700">${totalKm} KM</span>
                 `;
+                // ⭐️ 關鍵修正：添加點擊事件
+                li.addEventListener('click', () => showHistoryModal(student.studentId)); 
                 leaderboard.appendChild(li);
             });
             
@@ -838,32 +841,37 @@
 
             // 3. 填充歷史列表
             recordsList.innerHTML = '';
-            sortedRecords.forEach(record => {
-                // 格式化提交時間 (如果 timestamp 存在且是 Firestore Timestamp 物件)
-                let submissionTime = '';
-                if (record.timestamp && typeof record.timestamp.toDate === 'function') {
-                    submissionTime = record.timestamp.toDate().toLocaleDateString('zh-TW', { 
-                        year: 'numeric', month: '2-digit', day: '2-digit', 
-                        hour: '2-digit', minute: '2-digit', 
-                        hour12: false // 24 小時制
-                    });
-                } else {
-                    submissionTime = record.date; // 僅顯示記錄日期作為備用
-                }
-                
-                const distanceKm = (record.distanceMeters / 1000).toFixed(2);
+            if (sortedRecords.length === 0) {
+                 recordsList.innerHTML = '<li class="text-center text-gray-500">此學生目前沒有跑步紀錄。</li>';
+            } else {
+                 sortedRecords.forEach(record => {
+                    // 格式化提交時間 (如果 timestamp 存在且是 Firestore Timestamp 物件)
+                    let submissionTime = '';
+                    if (record.timestamp && typeof record.timestamp.toDate === 'function') {
+                        submissionTime = record.timestamp.toDate().toLocaleDateString('zh-TW', { 
+                            year: 'numeric', month: '2-digit', day: '2-digit', 
+                            hour: '2-digit', minute: '2-digit', 
+                            hour12: false // 24 小時制
+                        });
+                    } else {
+                        submissionTime = record.date; // 僅顯示記錄日期作為備用
+                    }
+                    
+                    const distanceKm = (record.distanceMeters / 1000).toFixed(2);
 
-                const li = document.createElement('li');
-                li.className = 'flex flex-col sm:flex-row justify-between items-start sm:items-center p-3 border-b border-gray-100 hover:bg-indigo-50 transition-colors rounded-lg mb-1';
-                li.innerHTML = `
-                    <div class="flex flex-col">
-                        <span class="text-sm font-medium text-gray-800">${record.date} 紀錄</span>
-                        <span class="text-xs text-gray-500">圈數: ${record.laps} (提交於: ${submissionTime})</span>
-                    </div>
-                    <span class="text-lg font-bold text-indigo-600 sm:mt-0 mt-1">${distanceKm} KM</span>
-                `;
-                recordsList.appendChild(li);
-            });
+                    const li = document.createElement('li');
+                    li.className = 'flex flex-col sm:flex-row justify-between items-start sm:items-center p-3 border-b border-gray-100 hover:bg-indigo-50 transition-colors rounded-lg mb-1';
+                    li.innerHTML = `
+                        <div class="flex flex-col">
+                            <span class="text-sm font-medium text-gray-800">${record.date} 紀錄</span>
+                            <span class="text-xs text-gray-500">圈數: ${record.laps} (提交於: ${submissionTime})</span>
+                        </div>
+                        <span class="text-lg font-bold text-indigo-600 sm:mt-0 mt-1">${distanceKm} KM</span>
+                    `;
+                    recordsList.appendChild(li);
+                });
+            }
+
 
             // 4. 顯示彈窗
             modal.classList.remove('hidden');
@@ -1100,7 +1108,7 @@
             <!-- 2. 視覺化地圖區 (保持不變) -->
             <div class="lg:col-span-2 bg-white p-6 rounded-2xl shadow-xl">
                 <h2 class="text-2xl font-bold text-indigo-600 mb-4 border-b pb-2">環島進度視覺化 (矩形跑道)</h2>
-                <p class="text-sm text-gray-500 mb-4">點擊地圖上的**學生標記**查看詳細跑步歷程。</p>
+                <p class="text-sm text-gray-500 mb-4">點擊地圖上的**學生標記**或**排行榜名單**查看詳細跑步歷程。</p>
                 
                 <div class="flex flex-col gap-6 justify-center items-center">
                     
