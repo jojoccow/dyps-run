@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>東陽國小學生環島跑步紀錄里程排名</title>
+    <title>學生環島跑步紀錄視覺化 (可點擊查詢歷程)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
@@ -21,7 +21,7 @@
         
         // **** ⚠️ 管理者密碼設置 (移除硬編碼密碼) ⚠️ ****
         // 必須在後端（如 Cloud Functions）檢查管理員 UID，前端不再儲存密碼。
-        const ADMIN_PIN = "deldata 2025"; // 僅作為本地測試時的參考或移除。在生產環境應移除前端驗證。
+        const ADMIN_PIN = "123456"; // 僅作為本地測試時的參考或移除。在生產環境應移除前端驗證。
         // **********************************************
 
         // ==== IMPORTANT: START Firebase Config (FOR GH Pages / Static Hosting) ====
@@ -585,7 +585,7 @@
             }
 
             generateButton.disabled = false;
-            generateButton.innerHTML = '✨ 取得 AI 教練建議';
+            generateButton.innerHTML = '✨ 取得 AI 跑步心得';
         }
         
         /**
@@ -669,6 +669,7 @@
         }
 
         function updateMap(students) {
+            // 1. 清除舊的標記和進度條
             CITIES_DATA.forEach(city => {
                 const container = document.getElementById(`marker-container-${city.id}`);
                 if (container) {
@@ -678,6 +679,8 @@
                 const existingBars = cityBlock ? cityBlock.querySelectorAll('.progress-bar-student') : [];
                 existingBars.forEach(bar => bar.remove());
             });
+
+            const barThickness = '4px';
 
             students.forEach(student => {
                 const totalDistance = student.totalDistanceM;
@@ -695,7 +698,7 @@
                 
                 if (!cityBlock || !container) return; 
 
-                // 1. 縣市內的進度條 (Progress Bar)
+                // 2. 進度條 (Progress Bar) - 移至中心線
                 let progressBar = document.getElementById(`progress-bar-${student.studentId}`);
                 
                 if (progressBar && progressBar.parentElement !== cityBlock) {
@@ -706,7 +709,7 @@
                 if (!progressBar) {
                     progressBar = document.createElement('div');
                     progressBar.id = `progress-bar-${student.studentId}`;
-                    progressBar.className = 'absolute transition-all duration-1000 ease-out z-0 opacity-80 progress-bar-student';
+                    progressBar.className = 'absolute transition-all duration-1000 ease-out z-0 opacity-80 progress-bar-student rounded-sm';
                     cityBlock.appendChild(progressBar);
                 }
                 
@@ -716,41 +719,42 @@
                 progressBar.style.right = '';
                 progressBar.style.width = '';
                 progressBar.style.height = ''; 
+                progressBar.style.transform = ''; // 清除舊的 transform
 
                 const progressPercent = `${progressInCity * 100}%`;
-                // 使用 studentId 產生獨特顏色
-                progressBar.style.backgroundColor = getColorHash(student.studentId);
+                const color = getColorHash(student.studentId);
                 
-                const barThickness = '4px';
-
+                progressBar.style.backgroundColor = color;
+                
+                // ⭐️ 核心修正：將路徑移到色塊中心
                 switch (direction) {
                     case 'right': 
-                        progressBar.style.bottom = '0';
-                        progressBar.style.left = '0';
-                        progressBar.style.height = barThickness;
-                        progressBar.style.width = progressPercent;
-                        break;
                     case 'left': 
-                        progressBar.style.bottom = '0';
-                        progressBar.style.right = '0'; 
+                        progressBar.style.top = '50%';
                         progressBar.style.height = barThickness;
                         progressBar.style.width = progressPercent;
+                        progressBar.style.transform = 'translateY(-50%)'; // 垂直居中
+                        if (direction === 'right') {
+                            progressBar.style.left = '0';
+                        } else { // 'left'
+                            progressBar.style.right = '0'; 
+                        }
                         break;
                     case 'up': 
-                        progressBar.style.bottom = '0';
-                        progressBar.style.left = '0'; 
-                        progressBar.style.width = barThickness;
-                        progressBar.style.height = progressPercent;
-                        break;
                     case 'down': 
-                        progressBar.style.top = '0';
-                        progressBar.style.right = '0'; 
+                        progressBar.style.left = '50%';
                         progressBar.style.width = barThickness;
                         progressBar.style.height = progressPercent;
+                        progressBar.style.transform = 'translateX(-50%)'; // 水平居中
+                        if (direction === 'up') {
+                            progressBar.style.bottom = '0';
+                        } else { // 'down'
+                            progressBar.style.top = '0'; 
+                        }
                         break;
                 }
                 
-                // 2. 標記 (Marker) - 改為動態寬度的藥丸狀
+                // 3. 標記 (Marker)
                 const markerPosition = `${progressInCity * 100}%`; 
                 
                 let marker = document.getElementById(`marker-${student.studentId}`);
@@ -768,41 +772,38 @@
                 marker.style.left = '';
                 marker.style.right = '';
                 marker.style.bottom = '';
-                marker.style.transform = ''; 
+                marker.style.transform = ''; // 清除舊的 transform
 
-                const color = getColorHash(student.studentId);
-                marker.style.backgroundColor = color;
+                marker.style.backgroundColor = color; // 確保顏色獨特
                 marker.style.color = getTextColor(color);
                 marker.title = `${student.name} (${student.studentId})：總里程 ${(totalDistance / 1000).toFixed(2)} KM (已完成 ${fullLaps} 次環島)。點擊查看歷程。`;
-                
-                // ⭐️ 核心變更：顯示完整名字
                 marker.textContent = student.name; 
                 
-                // Positioning: 使用 transform 進行水平/垂直置中及位移，使標記在進度條旁邊
+                // ⭐️ 核心修正：定位標記，確保中心位於進度點上
                 switch (direction) {
                     case 'right': 
-                        marker.style.bottom = '0'; 
+                        marker.style.top = '50%';
                         marker.style.left = markerPosition; 
-                        // 水平居中 (-50% 自身寬度) 並向上抬升 (負的自身高度 100% 加上 4px 間距)
-                        marker.style.transform = 'translateX(-50%) translateY(calc(-100% - 4px))'; 
+                        // 居中於進度點 (X, Y)
+                        marker.style.transform = 'translate(-50%, -50%)'; 
                         break;
                     case 'left': 
-                        marker.style.bottom = '0'; 
+                        marker.style.top = '50%'; 
                         marker.style.right = markerPosition;
-                        // 水平居中 (50% 自身寬度向右) 並向上抬升
-                        marker.style.transform = 'translateX(50%) translateY(calc(-100% - 4px))';
+                        // 居中於進度點 (X, Y)，但需從 right 往回推
+                        marker.style.transform = 'translate(50%, -50%)'; 
                         break;
                     case 'up': 
-                        marker.style.left = '0'; 
+                        marker.style.left = '50%'; 
                         marker.style.bottom = markerPosition; 
-                        // 垂直居中 (50% 自身高度向上) 並向左推出 (-100% 自身寬度加上 4px 間距)
-                        marker.style.transform = 'translateY(50%) translateX(calc(-100% - 4px))'; 
+                        // 居中於進度點 (X, Y)，但需從 bottom 往上推
+                        marker.style.transform = 'translate(-50%, 50%)'; 
                         break;
                     case 'down': 
-                        marker.style.right = '0'; 
+                        marker.style.left = '50%'; 
                         marker.style.top = markerPosition; 
-                        // 垂直居中 (-50% 自身高度向下) 並向右推出 (100% 自身寬度加上 4px 間距)
-                        marker.style.transform = 'translateY(-50%) translateX(calc(100% + 4px))'; 
+                        // 居中於進度點 (X, Y)
+                        marker.style.transform = 'translate(-50%, -50%)'; 
                         break;
                 }
                 
@@ -1019,8 +1020,8 @@
 
     <div class="container mx-auto p-4 lg:p-8">
         <header class="text-center mb-8">
-            <h1 class="text-4xl font-extrabold text-indigo-700 mb-2">🏃‍♂️ 東陽國小學生環島跑步里程儀 🇹🇼</h1>
-            <p class="text-xl text-gray-600">由臺南出發，沿著矩形環狀跑道順時針繞行！</p>
+            <h1 class="text-4xl font-extrabold text-indigo-700 mb-2">🏃‍♂️ 學生環島跑步里程儀 (Google 登入版) 🇹🇼</h1>
+            <p class="text-xl text-gray-600">跑步進度視覺化：沿著矩形環狀跑道順時針繞行！</p>
             <p class="text-sm text-gray-500 mt-1">虛擬環島跑道一圈為 <span class="font-bold text-red-500">50,000 公尺 (50 公里)</span>。</p>
         </header>
 
@@ -1051,7 +1052,7 @@
                 <!-- 🚨 紀錄表單 (未登入時隱藏) -->
                 <div id="recordFormDiv" class="space-y-4 hidden">
                     <form id="recordForm" class="space-y-4">
-                        <p class="text-sm text-gray-600 border-t pt-3">請輸入您的**座號**，以利數據累積和計算。</p>
+                        <p class="text-sm text-gray-600 border-t pt-3">請輸入您的**學號/座號**，以利數據累積和計算。</p>
                         
                         <div>
                             <label for="name" class="block text-sm font-medium text-gray-700">姓名</label>
@@ -1059,7 +1060,7 @@
                         </div>
                         
                         <div>
-                            <label for="studentId" class="block text-sm font-medium text-gray-700">座號</label>
+                            <label for="studentId" class="block text-sm font-medium text-gray-700">座號 / 編號</label>
                             <input type="text" id="studentId" required class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="例如：01 / A01">
                         </div>
 
@@ -1083,12 +1084,12 @@
                 <!-- AI 教練分析區 (保持不變) -->
                 <div class="mt-6 border-t pt-6">
                     <h2 class="text-xl font-bold text-purple-600 mb-3 flex items-center">
-                        <span class="mr-2">🤖</span> AI 教練分析
+                        <span class="mr-2">🤖</span> AI 教練心得分析
                     </h2>
                     <p class="text-sm text-gray-600 mb-4">根據您輸入的座號，AI 教練將分析您的累積里程並提供激勵性回饋！</p>
                     
                     <button type="button" id="generateReflectionButton" class="w-full py-3 px-4 border border-transparent rounded-lg shadow-md text-base font-medium text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 transition-colors duration-200">
-                        ✨ 取得 AI 教練建議
+                        ✨ 取得 AI 跑步心得
                     </button>
 
                     <div id="aiReflectionContent" class="mt-4 p-4 bg-purple-50 rounded-lg min-h-[50px] flex items-center justify-center">
@@ -1107,8 +1108,8 @@
 
             <!-- 2. 視覺化地圖區 (保持不變) -->
             <div class="lg:col-span-2 bg-white p-6 rounded-2xl shadow-xl">
-                <h2 class="text-2xl font-bold text-indigo-600 mb-4 border-b pb-2">環島跑步進度表</h2>
-                <p class="text-sm text-gray-500 mb-4">點擊地圖上的**排行榜名單**查看詳細跑步歷程。</p>
+                <h2 class="text-2xl font-bold text-indigo-600 mb-4 border-b pb-2">環島進度視覺化 (矩形跑道)</h2>
+                <p class="text-sm text-gray-500 mb-4">點擊地圖上的**學生標記**或**排行榜名單**查看詳細跑步歷程。</p>
                 
                 <div class="flex flex-col gap-6 justify-center items-center">
                     
@@ -1199,6 +1200,3 @@
     </div>
 </body>
 </html>
-
-
-
