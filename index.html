@@ -7,7 +7,6 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        // 關鍵變更：引入 GoogleAuthProvider, signInWithPopup, signOut
         import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, query, onSnapshot, serverTimestamp, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
@@ -20,8 +19,7 @@
         const PROXY_URL = "https://your-firebase-region-your-project-id.cloudfunctions.net/geminiProxy"; 
         
         // **** ⚠️ 管理者密碼設置 (移除硬編碼密碼) ⚠️ ****
-        // 必須在後端（如 Cloud Functions）檢查管理員 UID，前端不再儲存密碼。
-        const ADMIN_PIN = "123456"; // 僅作為本地測試時的參考或移除。在生產環境應移除前端驗證。
+        const ADMIN_PIN = "123456"; // 僅作為本地測試時的參考或移除。
         // **********************************************
 
         // ==== IMPORTANT: START Firebase Config (FOR GH Pages / Static Hosting) ====
@@ -54,7 +52,7 @@
         // Google 身份驗證提供者
         const googleProvider = new GoogleAuthProvider();
 
-        // Constants (保持不變)
+        // Constants 
         const LAPS_TO_METERS = 200; 
         const ISLAND_LAP_DISTANCE_M = 50000; 
 
@@ -111,17 +109,10 @@
             { id: 'tainan_end', name: '回到台南', progress: 1.0000 },
         ];
         
-        // ==== Color Utility Functions (NEW: Darken for better contrast) ====
-        
-        /**
-         * 根據輸入字串 (學生座號) 生成一個唯一的十六進制顏色。
-         * @param {string} str - 學生座號 (Student ID)
-         * @returns {string} - #RRGGBB 格式的顏色字串
-         */
+        // ==== Color Utility Functions (保持不變) ====
         function getColorHash(str) {
             let hash = 0;
             for (let i = 0; i < str.length; i++) {
-                // 基礎雜湊算法，產生不同的顏色分量
                 hash = str.charCodeAt(i) + ((hash << 5) - hash);
             }
             let color = '#';
@@ -132,11 +123,6 @@
             return color;
         }
 
-        /**
-         * 根據亮度判斷應該使用黑色還是白色文字。
-         * @param {string} hexcolor - #RRGGBB 顏色字串
-         * @returns {string} 'black' or 'white'
-         */
         function getTextColor(hexcolor) {
             const r = parseInt(hexcolor.substring(1, 3), 16);
             const g = parseInt(hexcolor.substring(3, 5), 16);
@@ -145,12 +131,6 @@
             return (brightness > 150) ? 'black' : 'white';
         }
 
-        /**
-         * 輕微加深顏色以獲得對比邊框。
-         * @param {string} hex - #RRGGBB 顏色字串
-         * @param {number} factor - 亮度係數 (0.0 到 1.0)
-         * @returns {string} - 調整後的顏色字串
-         */
         function darkenColor(hex, factor = 0.7) {
             let r = parseInt(hex.slice(1, 3), 16),
                 g = parseInt(hex.slice(3, 5), 16),
@@ -160,7 +140,6 @@
             g = Math.floor(g * factor);
             b = Math.floor(b * factor);
 
-            // 確保顏色值在 0-255 範圍內
             r = Math.max(0, Math.min(255, r));
             g = Math.max(0, Math.min(255, g));
             b = Math.max(0, Math.min(255, b));
@@ -170,9 +149,9 @@
         
         // ==== Local Storage Functions (Input Persistence) ====
         
-        function saveIdentity(name, studentId) {
+        function saveIdentity(studentId) {
             try {
-                localStorage.setItem('studentName', name);
+                // 姓名由 Google 帳號提供，不再儲存姓名
                 localStorage.setItem('studentId', studentId);
             } catch (e) {
                 console.warn("無法使用 localStorage 儲存身份。請檢查瀏覽器設定。", e);
@@ -181,18 +160,40 @@
 
         function loadIdentity() {
             try {
-                const name = localStorage.getItem('studentName');
                 const studentId = localStorage.getItem('studentId');
-                
-                const nameInput = document.getElementById('name');
-                const studentIdInput = document.getElementById('studentId');
+                const studentIdSelect = document.getElementById('studentId');
 
-                if (name && nameInput) nameInput.value = name;
-                if (studentId && studentIdInput) studentIdInput.value = studentId;
+                // 僅載入座號到新的下拉選單
+                if (studentId && studentIdSelect) {
+                    // 確保載入的值存在於選項中
+                    const optionExists = Array.from(studentIdSelect.options).some(option => option.value === studentId);
+                    if (optionExists) {
+                        studentIdSelect.value = studentId;
+                    }
+                }
             } catch (e) {
                 console.warn("無法從 localStorage 載入身份。", e);
             }
         }
+        
+        /**
+         * 填充 1 到 30 的座號下拉式選單
+         */
+        function populateStudentIdDropdown() {
+            const select = document.getElementById('studentId');
+            if (!select) return;
+
+            select.innerHTML = '<option value="" disabled selected>請選擇座號</option>';
+
+            for (let i = 1; i <= 30; i++) {
+                const option = document.createElement('option');
+                const studentIdValue = i.toString().padStart(2, '0'); // 格式化為 01, 02...
+                option.value = studentIdValue;
+                option.textContent = `${i} 號 (${studentIdValue})`;
+                select.appendChild(option);
+            }
+        }
+
 
         // ==== Firestore & Auth Functions ====
         
@@ -205,7 +206,8 @@
             const statusElement = document.getElementById('authStatus');
             const signInButton = document.getElementById('signInButton');
             const signOutButton = document.getElementById('signOutButton');
-            const recordFormDiv = document.getElementById('recordFormDiv'); // 包裹表單的 DIV
+            const recordFormDiv = document.getElementById('recordFormDiv'); 
+            const nameInput = document.getElementById('name');
             
             if (authReady && currentUserId) {
                 // 已登入
@@ -216,6 +218,7 @@
                 signOutButton.classList.remove('hidden');
                 recordFormDiv.classList.remove('hidden'); 
                 document.getElementById('currentUserNameSpan').textContent = currentUserName;
+                nameInput.value = currentUserName; // ⭐️ 自動填寫姓名
             } else if (authReady && !currentUserId) {
                 // 未登入/登出
                 statusElement.textContent = '🔒 請使用 Google 帳號登入以提交您的跑步紀錄。';
@@ -225,6 +228,7 @@
                 signOutButton.classList.add('hidden');
                 recordFormDiv.classList.add('hidden'); 
                 document.getElementById('currentUserNameSpan').textContent = '訪客';
+                nameInput.value = ''; // ⭐️ 清空姓名
             } else {
                 // 正在連線
                 statusElement.textContent = '⌛ 正在連線到資料庫...';
@@ -243,7 +247,6 @@
                 // 登入成功，onAuthStateChanged 會自動處理後續流程
                 showMessageBox(`歡迎，${result.user.displayName || result.user.email}！您已成功登入。`, "success");
             } catch (error) {
-                // 處理登入錯誤 (例如用戶關閉視窗)
                 console.error("Google Sign-in Failed:", error);
                 showMessageBox(`❌ Google 登入失敗: ${error.message}. 請稍後再試。`, "error");
             }
@@ -254,44 +257,43 @@
              try {
                 await signOut(auth);
                 showMessageBox("您已成功登出。", "info");
-                // 登出後 onAuthStateChanged 會更新 UI
             } catch (error) {
                 console.error("Sign-out Failed:", error);
                 showMessageBox(`❌ 登出失敗: ${error.message}`, "error");
             }
         }
 
-
         /**
          * 啟動 Firebase 身份驗證狀態監聽
          */
         function initAuthAndListener() {
+            const nameInput = document.getElementById('name');
             onAuthStateChanged(auth, (user) => {
                 authReady = true; 
                 
                 if (user) {
-                    // 已登入 (來自 Google 帳號)
                     currentUserId = user.uid;
                     currentUserName = user.displayName || user.email; // 使用 Google 帳號的名稱或 email
-                    updateAuthStatusUI();
+                    nameInput.value = currentUserName; // ⭐️ 修正：確保登入時更新
                     
                     if (!listenerActive) {
                         setupRealtimeListener();
                         listenerActive = true;
                     }
                 } else {
-                    // 未登入/登出
                     currentUserId = null;
                     currentUserName = '訪客';
-                    updateAuthStatusUI();
-                    listenerActive = false; // 重置監聽狀態，等待下次登入
-                    // 登出時清空排行榜，防止顯示錯誤數據
+                    nameInput.value = ''; // ⭐️ 修正：確保登出時清空
+                    listenerActive = false; 
+
+                    // 登出時清空排行榜
                     const leaderboard = document.getElementById('leaderboard');
                     if (leaderboard) {
                         leaderboard.innerHTML = '<li class="p-3 text-gray-500 text-center">請先登入以查看排行榜。</li>';
                         updateMap([]);
                     }
                 }
+                updateAuthStatusUI(); // 統一更新 UI
             });
         }
         
@@ -332,7 +334,6 @@
             }
         }
 
-        // ⚠️ 注意：由於 Cloud Function 方案，這裡的前端密碼檢查應被移除或用作測試用途
         function resetDataHandler() {
             showConfirmationModal(
                 "⚠️ 管理者數據清除", 
@@ -342,7 +343,6 @@
                     const enteredPin = pinInput.value.trim();
                     pinInput.value = ''; 
                     
-                    // 🚨 風險點：這裡的密碼檢查應轉移到後端
                     if (enteredPin === ADMIN_PIN) {
                         deleteAllRecords();
                     } else {
@@ -355,6 +355,10 @@
 
         // ==== DOMContentLoaded / Init ====
         document.addEventListener('DOMContentLoaded', () => {
+            
+            // ⭐️ 新增：生成下拉選單
+            populateStudentIdDropdown();
+
             const form = document.getElementById('recordForm');
             const dateInput = document.getElementById('date');
             const today = new Date().toISOString().split('T')[0];
@@ -369,16 +373,17 @@
             const generateButton = document.getElementById('generateReflectionButton');
             generateButton.addEventListener('click', (e) => {
                 e.preventDefault();
-                // 在這裡我們仍然使用儲存在 localStorage 的姓名/座號來提取紀錄，但需要檢查是否已登入
+                
                 if (!currentUserId) {
                      showMessageBox("請先登入才能取得個人化 AI 心得。", "info");
                      return;
                 }
+                // 姓名來自唯讀欄位，座號來自下拉選單
                 const name = document.getElementById('name').value.trim();
                 const studentId = document.getElementById('studentId').value.trim();
                 
                 if (!name || !studentId) {
-                    showMessageBox("請先輸入姓名和座號，才能取得個人化 AI 心得。", "info");
+                    showMessageBox("請確保您已登入並選擇座號，才能取得個人化 AI 心得。", "info");
                     return;
                 }
                 
@@ -400,12 +405,11 @@
 
             document.getElementById('cancelDeleteButton').addEventListener('click', closeConfirmationModal);
             
-            // 🚨 新增：關閉歷史記錄彈窗的事件
             document.getElementById('closeHistoryModalButton').addEventListener('click', closeHistoryModal);
 
             buildBlockMap();
 
-            initAuthAndListener(); // 啟動監聽和登入流程 (會等待 onAuthStateChanged)
+            initAuthAndListener(); // 啟動監聽和登入流程
         });
         
         /**
@@ -456,27 +460,28 @@
                 return;
             }
             
-            const name = document.getElementById('name').value.trim();
+            // ⭐️ 姓名來自唯讀欄位，座號來自下拉選單
+            const name = document.getElementById('name').value.trim(); 
             const studentId = document.getElementById('studentId').value.trim();
             const date = document.getElementById('date').value;
             const laps = parseInt(document.getElementById('laps').value, 10);
 
             if (!name || !studentId || !date || isNaN(laps) || laps <= 0) {
-                showMessageBox("請確保所有欄位都已正確填寫，且圈數大於 0。", "info");
+                showMessageBox("請確保您已登入、選擇座號，且所有欄位都已正確填寫，圈數大於 0。", "info");
                 return;
             }
             
-            saveIdentity(name, studentId); 
+            saveIdentity(studentId); // 僅儲存座號
             
             const distanceMeters = laps * LAPS_TO_METERS;
 
             const record = {
                 name: name,
-                studentId: studentId, // 仍使用座號/編號作為數據識別鍵
+                studentId: studentId,
                 date: date,
                 laps: laps,
                 distanceMeters: distanceMeters,
-                submittedBy: currentUserId, // 紀錄提交者 Google UID
+                submittedBy: currentUserId, 
                 timestamp: serverTimestamp()
             };
 
@@ -493,7 +498,6 @@
                 console.error("Error adding document: ", error);
                 showMessageBox(`儲存紀錄失敗 (錯誤: ${error.code || error.message})`, "error");
             } finally {
-                // 確保按鈕在任何情況下都會重置
                 submitButton.disabled = false;
                 submitButton.textContent = '提交紀錄';
             }
@@ -508,7 +512,7 @@
 
                 if (currentProgress >= p1.progress && currentProgress < p2.progress) {
                     const segmentLength = p2.progress - p1.progress;
-                    const progressInCity = (currentProgress - p1.progress) / segmentLength; // 0.0 ~ 1.0
+                    const progressInCity = (currentProgress - p1.progress) / segmentLength; 
                     
                     return {
                         cityId: p1.id,
@@ -589,7 +593,6 @@
 
             for (let i = 0; i < maxRetries; i++) {
                 try {
-                    // ⭐️ 關鍵變更：呼叫 PROXY_URL
                     const response = await fetch(PROXY_URL, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -598,23 +601,19 @@
                     
                     if (!response.ok) {
                         const errorBody = await response.text();
-                        // 處理來自 Cloud Function 的錯誤
                         throw new Error(`代理服務錯誤! 狀態: ${response.status}. 內容: ${errorBody.substring(0, 100)}...`);
                     }
 
                     const result = await response.json();
                     
-                    // 從代理服務返回的結果中提取 Gemini 的輸出
                     const candidateText = result.candidates?.[0]?.content?.parts?.[0]?.text;
                     
                     if (candidateText) {
                         resultText = candidateText;
-                        break; // 成功取得內容，跳出迴圈
+                        break; 
                     } else if (result.error) {
-                         // 代理服務可能返回帶有錯誤資訊的 JSON 
                          throw new Error(`AI 請求失敗: ${result.error.message || '未知錯誤'}`);
                     } else {
-                         // 成功連線但沒有內容
                          console.warn("Proxy returned 200 OK but no text content:", JSON.stringify(result, null, 2));
                          throw new Error("AI 回覆內容遺失。");
                     }
@@ -623,10 +622,8 @@
                     lastError = error.message;
                     console.error(`第 ${i + 1} 次嘗試失敗:`, error);
                     if (i < maxRetries - 1) {
-                        // 實施指數退避 (1s, 2s)
                         await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000));
                     } else {
-                        // 最後一次嘗試失敗，使用最後一次的錯誤訊息
                         resultText = `很抱歉，AI 教練連線失敗，請稍後再試。 (錯誤訊息: ${lastError})`;
                     }
                 }
@@ -635,7 +632,6 @@
             if (resultText) {
                  reflectionBox.innerHTML = `<p class="text-gray-700 leading-relaxed italic border-l-4 border-indigo-400 pl-4">${resultText}</p>`;
             } else {
-                 // 確保在所有嘗試都失敗且沒有設置錯誤訊息時顯示通用錯誤
                  reflectionBox.innerHTML = `<p class="text-red-500">AI 教練未能產生心得。請檢查網路連線或稍後再試。 (最後錯誤: ${lastError})</p>`;
             }
 
@@ -644,11 +640,10 @@
         }
         
         /**
-         * 啟動即時監聽器，從 Firestore 獲取所有數據。
+         * 啟動即時監聽器，從 Firestore 獲取所有數據。 (保持不變)
          */
         function setupRealtimeListener() {
             if (!currentUserId && listenerActive) {
-                // 如果登出後 onAuthStateChanged 觸發，應避免啟動監聽
                 return;
             }
 
@@ -659,7 +654,6 @@
             onSnapshot(recordsQuery, (snapshot) => {
                 const allRecords = [];
                 snapshot.forEach((doc) => {
-                    // 確保 doc.data() 包含 Firestore Timestamp 物件，以便後續處理
                     allRecords.push(doc.data());
                 });
                 processRecords(allRecords);
@@ -683,12 +677,12 @@
                         name: record.name,
                         studentId: key,
                         totalDistanceM: 0,
-                        records: [] // 🚨 關鍵變更：儲存單筆紀錄陣列
+                        records: [] 
                     };
                 }
                 const distance = typeof record.distanceMeters === 'number' ? record.distanceMeters : 0;
                 studentTotals[key].totalDistanceM += distance; 
-                studentTotals[key].records.push(record); // 🚨 關鍵變更：添加單筆紀錄
+                studentTotals[key].records.push(record); 
             });
             
             studentTotalsData = studentTotals;
@@ -706,7 +700,6 @@
             students.forEach((student, index) => {
                 const totalKm = (student.totalDistanceM / 1000).toFixed(2);
                 const li = document.createElement('li');
-                // 🚨 修正點：為排行榜項目添加 cursor-pointer 和 click 監聽器
                 li.className = 'p-3 bg-white/70 backdrop-blur-sm rounded-xl flex justify-between items-center shadow-md mb-2 transition-all duration-300 hover:shadow-lg cursor-pointer';
                 li.innerHTML = `
                     <div class="flex items-center space-x-3">
@@ -715,7 +708,6 @@
                     </div>
                     <span class="font-mono text-xl text-green-700">${totalKm} KM</span>
                 `;
-                // ⭐️ 關鍵修正：添加點擊事件
                 li.addEventListener('click', () => showHistoryModal(student.studentId)); 
                 leaderboard.appendChild(li);
             });
@@ -724,7 +716,7 @@
         }
 
         function updateMap(students) {
-            // 1. 清除舊的標記和進度條
+            // 1. 清除舊的標記和進度條 (保持不變)
             CITIES_DATA.forEach(city => {
                 const container = document.getElementById(`marker-container-${city.id}`);
                 if (container) {
@@ -753,7 +745,7 @@
                 
                 if (!cityBlock || !container) return; 
 
-                // 2. 進度條 (Progress Bar) - 移至中心線
+                // 2. 進度條 (Progress Bar) (保持不變)
                 let progressBar = document.getElementById(`progress-bar-${student.studentId}`);
                 
                 if (progressBar && progressBar.parentElement !== cityBlock) {
@@ -774,21 +766,20 @@
                 progressBar.style.right = '';
                 progressBar.style.width = '';
                 progressBar.style.height = ''; 
-                progressBar.style.transform = ''; // 清除舊的 transform
+                progressBar.style.transform = ''; 
 
                 const progressPercent = `${progressInCity * 100}%`;
                 const color = getColorHash(student.studentId);
                 
-                progressBar.style.backgroundColor = color; // 應用唯一的顏色
+                progressBar.style.backgroundColor = color; 
                 
-                // ⭐️ 核心修正：將路徑移到色塊中心
                 switch (direction) {
                     case 'right': 
                     case 'left': 
                         progressBar.style.top = '50%';
                         progressBar.style.height = barThickness;
                         progressBar.style.width = progressPercent;
-                        progressBar.style.transform = 'translateY(-50%)'; // 垂直居中
+                        progressBar.style.transform = 'translateY(-50%)'; 
                         if (direction === 'right') {
                             progressBar.style.left = '0';
                         } else { // 'left'
@@ -800,7 +791,7 @@
                         progressBar.style.left = '50%';
                         progressBar.style.width = barThickness;
                         progressBar.style.height = progressPercent;
-                        progressBar.style.transform = 'translateX(-50%)'; // 水平居中
+                        progressBar.style.transform = 'translateX(-50%)'; 
                         if (direction === 'up') {
                             progressBar.style.bottom = '0';
                         } else { // 'down'
@@ -809,17 +800,15 @@
                         break;
                 }
                 
-                // 3. 標記 (Marker)
+                // 3. 標記 (Marker) (保持不變)
                 const markerPosition = `${progressInCity * 100}%`; 
-                const borderColor = darkenColor(color, 0.7); // 計算對比邊框顏色
+                const borderColor = darkenColor(color, 0.7); 
                 
                 let marker = document.getElementById(`marker-${student.studentId}`);
                 if (!marker) {
                     marker = document.createElement('div');
                     marker.id = `marker-${student.studentId}`;
-                    // ⭐️ 關鍵變更：移除 Tailwind 的 border-2 border-white，改用 style 設定
                     marker.className = `student-marker absolute px-2 h-6 rounded-full shadow-lg border-2 flex items-center justify-center font-bold text-xs whitespace-nowrap transition-all duration-1000 ease-out z-30 cursor-pointer`; 
-                    // 🚨 關鍵變更：點擊標記時顯示歷史記錄
                     marker.addEventListener('click', () => showHistoryModal(student.studentId));
                     container.appendChild(marker); 
                 }
@@ -828,39 +817,33 @@
                 marker.style.left = '';
                 marker.style.right = '';
                 marker.style.bottom = '';
-                marker.style.transform = ''; // 清除舊的 transform
+                marker.style.transform = ''; 
 
-                // ⭐️ 核心修正：同時設定背景色和邊框色，確保對比度和唯一性
                 marker.style.backgroundColor = color; 
                 marker.style.borderColor = borderColor; 
                 marker.style.color = getTextColor(color);
                 marker.title = `${student.name} (${student.studentId})：總里程 ${(totalDistance / 1000).toFixed(2)} KM (已完成 ${fullLaps} 次環島)。點擊查看歷程。`;
                 marker.textContent = student.name; 
                 
-                // ⭐️ 核心修正：定位標記，確保中心位於進度點上
                 switch (direction) {
                     case 'right': 
                         marker.style.top = '50%';
                         marker.style.left = markerPosition; 
-                        // 居中於進度點 (X, Y)
                         marker.style.transform = 'translate(-50%, -50%)'; 
                         break;
                     case 'left': 
                         marker.style.top = '50%'; 
                         marker.style.right = markerPosition;
-                        // 居中於進度點 (X, Y)，但需從 right 往回推
                         marker.style.transform = 'translate(50%, -50%)'; 
                         break;
                     case 'up': 
                         marker.style.left = '50%'; 
                         marker.style.bottom = markerPosition; 
-                        // 居中於進度點 (X, Y)，但需從 bottom 往上推
                         marker.style.transform = 'translate(-50%, 50%)'; 
                         break;
                     case 'down': 
                         marker.style.left = '50%'; 
                         marker.style.top = markerPosition; 
-                        // 居中於進度點 (X, Y)
                         marker.style.transform = 'translate(-50%, -50%)'; 
                         break;
                 }
@@ -872,7 +855,7 @@
         }
         
         /**
-         * 🚨 新增功能：顯示學生的跑步歷史紀錄彈窗
+         * 🚨 新增功能：顯示學生的跑步歷史紀錄彈窗 (保持不變)
          */
         function showHistoryModal(studentId) {
             const student = studentTotalsData[studentId];
@@ -884,35 +867,29 @@
             const modal = document.getElementById('historyModal');
             const recordsList = document.getElementById('historyRecordsList');
 
-            // 1. 排序紀錄：按日期降序 (最新在前)
             const sortedRecords = student.records.sort((a, b) => {
-                // 優先使用 Firestore Timestamp 進行精確排序
                 if (a.timestamp && b.timestamp && typeof a.timestamp.toDate === 'function' && typeof b.timestamp.toDate === 'function') {
                     return b.timestamp.toDate() - a.timestamp.toDate();
                 }
-                // 否則使用 date 欄位進行排序
                 return new Date(b.date) - new Date(a.date);
             });
 
-            // 2. 填充標題和總結
             document.getElementById('historyTitle').textContent = `${student.name} (${student.studentId}) 跑步歷程`;
             document.getElementById('historyTotal').textContent = `總里程: ${(student.totalDistanceM / 1000).toFixed(2)} KM`;
 
-            // 3. 填充歷史列表
             recordsList.innerHTML = '';
             if (sortedRecords.length === 0) {
                  recordsList.innerHTML = '<li class="text-center text-gray-500">此學生目前沒有跑步紀錄。</li>';
             } else {
                  sortedRecords.forEach(record => {
-                    // 格式化提交時間 (如果 timestamp 存在且是 Firestore Timestamp 物件)
                     let submissionTime = '';
                     if (record.timestamp && typeof record.timestamp.toDate === 'function') {
                         submissionTime = record.timestamp.toDate().toLocaleTimeString('zh-TW', { 
-                            hour: '2-digit', minute: '2-digit', hour12: false // 24 小時制
+                            hour: '2-digit', minute: '2-digit', hour12: false 
                         });
-                        submissionTime = `${record.date} ${submissionTime}`; // 將日期和時間結合
+                        submissionTime = `${record.date} ${submissionTime}`; 
                     } else {
-                        submissionTime = record.date; // 僅顯示記錄日期作為備用
+                        submissionTime = record.date; 
                     }
                     
                     const distanceKm = (record.distanceMeters / 1000).toFixed(2);
@@ -931,7 +908,6 @@
             }
 
 
-            // 4. 顯示彈窗
             modal.classList.remove('hidden');
         }
 
@@ -940,7 +916,7 @@
         }
         
         /**
-         * 顯示浮動訊息框，並在 8 秒後自動隱藏。
+         * 顯示浮動訊息框，並在 8 秒後自動隱藏。 (保持不變)
          */
         function showMessageBox(message, type = 'info') {
             const box = document.getElementById('messageBox');
@@ -959,21 +935,16 @@
 
             const baseClasses = 'fixed bottom-5 right-5 p-4 border rounded-lg shadow-xl z-50 transition-transform duration-300 transform';
             
-            // 1. 重設並應用隱藏狀態和顏色
-            // 確保訊息框處於隱藏狀態 (translate-x-full)
             box.className = `${baseClasses} translate-x-full ${boxClasses[type]}`;
             
             icon.textContent = iconContent[type];
             content.textContent = message;
 
-            // 2. 強制瀏覽器重繪，確保從 hidden 狀態開始 transition
             void box.offsetWidth; 
 
-            // 3. 顯示訊息框 (從右邊滑入)
             box.classList.remove('translate-x-full');
             box.classList.add('translate-x-0');
 
-            // 4. 8 秒後自動隱藏 (滑出右邊)
             setTimeout(() => {
                 box.classList.remove('translate-x-0');
                 box.classList.add('translate-x-full');
@@ -1033,7 +1004,7 @@
             text-shadow: 0 0 4px rgba(0, 0, 0, 0.4);
         }
         
-        /* 中央競賽主題區塊 CSS (保持不變) */
+        /* 中央競賽主題區塊 CSS */
         .grid-center-area {
             grid-column: 2 / 5;
             grid-row: 2 / 5;   
@@ -1079,7 +1050,7 @@
                     ⌛ 正在連線到資料庫...
                 </div>
                 
-                <!-- 🚨 登入/登出按鈕 -->
+                <!-- 登入/登出按鈕 -->
                 <button type="button" id="signInButton" class="w-full py-3 px-4 border border-transparent rounded-lg shadow-md text-base font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors duration-200 hidden mb-3">
                     <svg class="inline-block w-5 h-5 mr-2 -mt-0.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
                         <path fill="#FFC107" d="M43.6 20.4H24v7.5h11.3c-.7 4.2-4 8-9.3 8-6 0-10.9-4.9-10.9-10.9S14.7 14.1 20.7 14.1c3.2 0 5.8 1.4 7.7 3.2l5.7-5.7C30.6 6.8 25.8 4 20.7 4 11.2 4 3.4 11.8 3.4 21.3s7.8 17.3 17.3 17.3c9.9 0 17.1-7.1 17.1-17.1 0-1.1-.1-2.2-.4-3.3z"></path>
@@ -1093,19 +1064,23 @@
                     👋 登出 (目前身份: <span id="currentUserNameSpan">訪客</span>)
                 </button>
                 
-                <!-- 🚨 紀錄表單 (未登入時隱藏) -->
+                <!-- 紀錄表單 (未登入時隱藏) -->
                 <div id="recordFormDiv" class="space-y-4 hidden">
                     <form id="recordForm" class="space-y-4">
-                        <p class="text-sm text-gray-600 border-t pt-3">請輸入您的**學號/座號**，以利數據累積和計算。</p>
+                        <p class="text-sm text-gray-600 border-t pt-3">請確保資料正確，以利數據累積和計算。</p>
                         
+                        <!-- ⭐️ 姓名 (Readonly) -->
                         <div>
-                            <label for="name" class="block text-sm font-medium text-gray-700">姓名</label>
-                            <input type="text" id="name" required class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="請輸入姓名">
+                            <label for="name" class="block text-sm font-medium text-gray-700">姓名 (由登入帳號自動填寫)</label>
+                            <input type="text" id="name" required readonly class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-3 bg-gray-100 text-gray-600 focus:outline-none">
                         </div>
                         
+                        <!-- ⭐️ 座號 (Dropdown Select) -->
                         <div>
-                            <label for="studentId" class="block text-sm font-medium text-gray-700">座號 / 編號</label>
-                            <input type="text" id="studentId" required class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="例如：01 / A01">
+                            <label for="studentId" class="block text-sm font-medium text-gray-700">座號 / 編號 (1-30)</label>
+                            <select id="studentId" required class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-3 focus:border-indigo-500 focus:ring-indigo-500 bg-white">
+                                <!-- Options will be generated by JavaScript -->
+                            </select>
                         </div>
 
                         <div>
@@ -1125,7 +1100,7 @@
                     </form>
                 </div>
                 
-                <!-- AI 教練分析區 (保持不變) -->
+                <!-- AI 教練分析區 -->
                 <div class="mt-6 border-t pt-6">
                     <h2 class="text-xl font-bold text-purple-600 mb-3 flex items-center">
                         <span class="mr-2">🤖</span> AI 教練心得分析
@@ -1141,7 +1116,7 @@
                     </div>
                 </div>
 
-                <!-- 重置數據按鈕 (保持不變) -->
+                <!-- 重置數據按鈕 -->
                 <div class="mt-6 border-t pt-6">
                     <button type="button" id="resetDataButton" class="w-full py-3 px-4 border border-transparent rounded-lg shadow-md text-base font-medium text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors duration-200">
                         🗑️ 重置所有數據 (需管理者密碼)
@@ -1150,7 +1125,7 @@
                 </div>
             </div>
 
-            <!-- 2. 視覺化地圖區 (保持不變) -->
+            <!-- 2. 視覺化地圖區 -->
             <div class="lg:col-span-2 bg-white p-6 rounded-2xl shadow-xl">
                 <h2 class="text-2xl font-bold text-indigo-600 mb-4 border-b pb-2">環島進度視覺化 (矩形跑道)</h2>
                 <p class="text-sm text-gray-500 mb-4">點擊地圖上的**學生標記**或**排行榜名單**查看詳細跑步歷程。</p>
@@ -1188,7 +1163,7 @@
         
     </div>
 
-    <!-- 自訂訊息框 (已修正自動消失邏輯) -->
+    <!-- 自訂訊息框 -->
     <div id="messageBox" class="fixed bottom-5 right-5 p-4 border rounded-lg shadow-xl z-50 transition-transform duration-300 transform translate-x-full" role="alert">
         <div class="flex items-center">
             <span id="messageIcon" class="text-xl mr-2"></span>
@@ -1197,13 +1172,13 @@
         </div>
     </div>
     
-    <!-- 自訂確認對話框 (保持不變) -->
+    <!-- 自訂確認對話框 -->
     <div id="confirmModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
         <div class="bg-white rounded-xl p-8 max-w-lg mx-4 shadow-2xl transform transition-all scale-100">
             <h3 id="confirmTitle" class="text-2xl font-bold text-red-600 mb-4 border-b pb-2"></h3>
             <p id="confirmMessage" class="text-gray-700 mb-4 leading-relaxed"></p>
             
-            <!-- 密碼輸入欄位 (新增) -->
+            <!-- 密碼輸入欄位 -->
             <div class="mb-6">
                 <label for="adminPinInput" class="block text-sm font-medium text-gray-700 mb-2">管理者密碼</label>
                 <input type="password" id="adminPinInput" class="block w-full rounded-lg border-gray-300 shadow-sm p-3 focus:border-red-500 focus:ring-red-500" placeholder="請輸入密碼">
@@ -1220,7 +1195,7 @@
         </div>
     </div>
 
-    <!-- 🚨 跑步歷程紀錄彈窗 (新增) -->
+    <!-- 跑步歷程紀錄彈窗 -->
     <div id="historyModal" class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 hidden p-4">
         <div class="bg-white rounded-2xl w-full max-w-xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
             <!-- Modal Header -->
