@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>學生環島跑步紀錄視覺化 (優化底色)</title>
+    <title>學生環島跑步紀錄視覺化 (修復登入)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
@@ -17,31 +17,17 @@
         // ⚠️ 將此佔位符替換為您的 Firebase Cloud Function 部署後的實際 URL！
         const PROXY_URL = "https://your-firebase-region-your-project-id.cloudfunctions.net/geminiProxy"; 
         
-        // **** ⚠️ 管理者密碼設置 (移除硬編碼密碼) ⚠️ ****
+        // **** ⚠️ 管理者密碼設置 ⚠️ ****
         const ADMIN_PIN = "123456"; 
         // **********************************************
 
-        // ==== IMPORTANT: START Firebase Config (FOR GH Pages / Static Hosting) ====
-        const GH_PAGES_FIREBASE_CONFIG = {
-            apiKey: "AIzaSyCuxRrZXNPrKWx9nrRiZyY_pllUkSISeFo",
-            authDomain: "dyps-run.firebaseapp.com",
-            projectId: "dyps-run",
-            storageBucket: "dyps-run.firebasestorage.app",
-            messagingSenderId: "691795460367",
-            appId: "1:691795460367:web:fe6e2a323d1c4ff4bb3e7a",
-            measurementId: "G-QHBBCYHYDP" 
-        };
-        // ==== IMPORTANT: END Firebase Config ====
-
-        // ==== Global Variables (Adaptation for Static Hosting / Canvas) ====
-        const isCanvasEnvironment = typeof __firebase_config !== 'undefined' && __firebase_config !== '{}';
-        const firebaseConfig = isCanvasEnvironment 
-            ? JSON.parse(__firebase_config) 
-            : GH_PAGES_FIREBASE_CONFIG;
+        // ==== Global Variables: Get Config from Canvas Environment (MANDATORY) ====
+        // 確保使用 Canvas 環境提供的有效配置和 ID。已移除硬編碼的 GH_PAGES_FIREBASE_CONFIG。
+        
+        const __ENV_FIREBASE_CONFIG = typeof __firebase_config !== 'undefined' ? __firebase_config : '{}';
+        const firebaseConfig = JSON.parse(__ENV_FIREBASE_CONFIG); 
             
-        const appId = isCanvasEnvironment 
-            ? (typeof __app_id !== 'undefined' ? __app_id : 'default-running-app') 
-            : 'beta4-gh-pages-running-app'; 
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-running-app'; 
 
         // Initialize Firebase
         const app = initializeApp(firebaseConfig);
@@ -143,8 +129,6 @@
             return (brightness > 140) ? 'black' : 'white';
         }
 
-        // 我們不再使用 darkenColor 來自訂邊框，改用固定顏色。
-        
         // ==== Local Storage Functions (Input Persistence) ====
         
         function saveIdentity(studentId) {
@@ -193,6 +177,7 @@
         // ==== Firestore & Auth Functions ====
         
         const getCollectionRef = () => {
+            // 由於 Firebase config 現在是有效的，這裡的 path 應該已經可以正常工作
             return collection(db, `artifacts/${appId}/public/data/running_records`);
         };
 
@@ -236,10 +221,12 @@
         
         async function signInWithGoogle() {
             try {
+                // 這裡會使用到有效的 API Key 進行認證
                 const result = await signInWithPopup(auth, googleProvider);
                 showMessageBox(`歡迎，${result.user.displayName || result.user.email}！您已成功登入。`, "success");
             } catch (error) {
                 console.error("Google Sign-in Failed:", error);
+                // 如果 API Key 仍然無效，會在這裡顯示錯誤
                 showMessageBox(`❌ Google 登入失敗: ${error.message}. 請稍後再試。`, "error");
             }
         }
@@ -284,7 +271,7 @@
             });
         }
         
-        // ==== DOMContentLoaded / Init ====
+        // ==== DOMContentLoaded / Init (保持不變) ====
         document.addEventListener('DOMContentLoaded', () => {
             
             populateStudentIdDropdown();
